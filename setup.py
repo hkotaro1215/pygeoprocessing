@@ -14,7 +14,7 @@ except ImportError:
     from distutils.command.build_ext import build_ext
     from distutils.extension import Extension
 
-
+import natcap.versioner
 import numpy
 
 try:
@@ -99,13 +99,15 @@ EXTENSION_LIST = ([
     Extension(
         "pygeoprocessing.geoprocessing_core",
         sources=['pygeoprocessing/geoprocessing_core.pyx'],
-        language="c++"),
+        language="c++",
+        include_dirs=[numpy.get_include()]),
     Extension(
         "pygeoprocessing.routing.routing_core",
         sources=[
             'pygeoprocessing/routing/routing_core.pyx',
             'pygeoprocessing/routing/routing_core.pxd'],
-        language="c++")
+        language="c++",
+        include_dirs=[numpy.get_include()])
     ])
 
 if not USE_CYTHON:
@@ -116,11 +118,12 @@ REQUIREMENTS = [
     'scipy',
     'shapely',
     'gdal',
+    'natcap.versioner>=0.1.2',
     ]
 
 setup(
     name='pygeoprocessing',
-    version='0.3.0a3',
+    version=natcap.versioner.vcs_version(),
     description="Geoprocessing routines for GIS",
     long_description=readme + '\n\n' + history,
     maintainer='Rich Sharp',
