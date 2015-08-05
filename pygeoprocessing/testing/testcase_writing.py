@@ -34,7 +34,7 @@ def file_has_class(test_file_uri, test_class_name):
                 return True
         return False
 
-def class_has_test(test_file_uri, test_class_name, test_func_name):
+def class_has_ftest(test_file_uri, test_class_name, test_func_name):
     """Check that a python test file contains the given class and function.
 
         test_file_uri - a URI to a python file containing test classes.
@@ -72,10 +72,10 @@ def class_has_test(test_file_uri, test_class_name, test_func_name):
         return False
 
 
-def add_test_to_class(file_uri, test_class_name, test_func_name,
+def add_ftest_to_class(file_uri, test_class_name, test_func_name,
         in_archive_uri, out_archive_uri, module):
     """Add a test function to an existing test file.  The test added is a
-    regression test using the natcap.invest.testing.regression archive
+    regression test using the pygeoprocessing.testing.regression archive
     decorator.
 
         file_uri - URI to the test file to modify.
@@ -88,7 +88,7 @@ def add_test_to_class(file_uri, test_class_name, test_func_name,
         in_archive_uri - URI to the input archive.
         out_archive_uri - URI to the output archive.
         module - string module, whose execute function will be run in the test
-            (e.g. 'natcap.invest.pollination.pollination')
+            (e.g. 'pygeoprocessing.pollination.pollination')
 
     WARNING: The input test file is overwritten with the new test file.
 
@@ -100,7 +100,7 @@ def add_test_to_class(file_uri, test_class_name, test_func_name,
     new_file = codecs.open(temp_file_uri, 'w+', encoding='utf-8')
 
     cls_exists = file_has_class(file_uri, test_class_name)
-    test_exists = class_has_test(file_uri, test_class_name, test_func_name)
+    test_exists = class_has_ftest(file_uri, test_class_name, test_func_name)
 
     if test_exists:
         print ('WARNING: %s.%s exists.  Not writing a new test.' %
@@ -108,15 +108,15 @@ def add_test_to_class(file_uri, test_class_name, test_func_name,
         return
 
     def _import():
-        return 'import natcap.invest.testing\n'
+        return 'import pygeoprocessing.testing\n'
 
     def _test_class(test_class):
-        return 'class %s(natcap.invest.testing.GISTest):\n' % test_class
+        return 'class %s(unittest.TestCase):\n' % test_class
 
     def _archive_reg_test(test_name, module, in_archive, out_archive, cur_dir):
         in_archive = os.path.relpath(in_archive, cur_dir)
         out_archive = os.path.relpath(out_archive, cur_dir)
-        return('    @natcap.invest.testing.regression(\n' +\
+        return('    @pygeoprocessing.testing.regression(\n' +\
                '        input_archive="%s",\n' % in_archive +\
                '        workspace_archive="%s")\n' % out_archive +\
                '    def %s(self):\n' % test_name +\

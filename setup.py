@@ -123,7 +123,8 @@ REQUIREMENTS = [
 
 setup(
     name='pygeoprocessing',
-    version=natcap.versioner.vcs_version(),
+    version=natcap.versioner.parse_version(),
+    natcap_version=os.path.join('pygeoprocessing', 'version.py'),
     description="Geoprocessing routines for GIS",
     long_description=readme + '\n\n' + history,
     maintainer='Rich Sharp',
@@ -131,6 +132,7 @@ setup(
     url='http://bitbucket.org/richpsharp/pygeoprocessing',
     packages=[
         'pygeoprocessing',
+        'pygeoprocessing.tests',
         'pygeoprocessing.routing',
         'pygeoprocessing.testing',
         'pygeoprocessing.tests',
