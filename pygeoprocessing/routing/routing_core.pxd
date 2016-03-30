@@ -18,9 +18,9 @@ cdef class BlockCache:
 cdef calculate_transport(
     outflow_direction_uri, outflow_weights_uri, deque[int] &sink_cell_deque,
     source_uri, absorption_rate_uri, loss_uri, flux_uri, absorption_mode,
-    stream_uri=?, include_source=?)
+    stream_uri, include_source)
 cdef flat_edges(dem_uri, flow_direction_uri, deque[int] &high_edges,
-                deque[int] &low_edges, int drain_off_edge=?)
+                deque[int] &low_edges, int drain_off_edge)
 cdef label_flats(dem_uri, deque[int] &low_edges, labels_uri)
 cdef clean_high_edges(labels_uri, deque[int] &high_edges)
 cdef drain_flats(deque[int] &high_edges, deque[int] &low_edges, labels_uri,
