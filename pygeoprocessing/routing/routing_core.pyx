@@ -177,7 +177,7 @@ cdef class BlockCache:
 cdef calculate_transport(
         outflow_direction_uri, outflow_weights_uri, deque[int] &sink_cell_deque,
         source_uri, absorption_rate_uri, loss_uri, flux_uri, absorption_mode,
-        stream_uri=None, include_source=1):
+        stream_uri, include_source):
     """This is a generalized flux transport algorithm that operates
         on a 2D grid given a per pixel flow direction, per pixel source,
         and per pixel absorption rate.  It produces a grid of loss per
@@ -1477,7 +1477,7 @@ def percent_to_sink(
 @cython.cdivision(True)
 cdef flat_edges(
         dem_uri, flow_direction_uri, deque[int] &high_edges,
-        deque[int] &low_edges, int drain_off_edge=0):
+        deque[int] &low_edges, int drain_off_edge):
     """This function locates flat cells that border on higher and lower terrain
         and places them into sets for further processing.
 
@@ -2629,8 +2629,7 @@ def resolve_flats(
     cdef deque[int] high_edges
     cdef deque[int] low_edges
     flat_edges(
-        dem_uri, flow_direction_uri, high_edges, low_edges,
-        drain_off_edge=drain_off_edge)
+        dem_uri, flow_direction_uri, high_edges, low_edges, drain_off_edge)
 
     if low_edges.size() == 0:
         if high_edges.size() != 0:
