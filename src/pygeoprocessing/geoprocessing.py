@@ -31,12 +31,9 @@ import shapely.wkt
 import shapely.ops
 from shapely import speedups
 import shapely.prepared
+
 import geoprocessing_core
 import fileio
-
-logging.basicConfig(
-    format='%(asctime)s %(name)-18s %(levelname)-8s %(message)s',
-    level=logging.DEBUG, datefmt='%m/%d/%Y %H:%M:%S ')
 
 LOGGER = logging.getLogger('pygeoprocessing.geoprocessing')
 _LOGGING_PERIOD = 5.0  # min 5.0 seconds per update log message for the module
@@ -718,7 +715,7 @@ def vectorize_points(
 def aggregate_raster_values_uri(
         raster_uri, shapefile_uri, shapefile_field=None, ignore_nodata=True,
         threshold_amount_lookup=None, ignore_value_list=[], process_pool=None,
-        all_touched=False):
+        all_touched=False, polygons_might_overlap=True):
     """Collect all the raster values that lie within provided shapefile field or
         bounds depending on the value of operation.
 
@@ -745,6 +742,12 @@ def aggregate_raster_values_uri(
         process_pool: a process pool for multiprocessing
         all_touched (boolean): if true will account for any pixel whose
             geometry passes through the pixel, not just the center point
+        polygons_might_overlap (boolean): if True the function calculates
+            aggregation coverage close to optimally by rasterizing sets of
+            polygons that don't overlap.  However, this step can be
+            computationally expensive for cases where there are many polygons.
+            Setting this flag to False directs the function rasterize in one
+            step.
 
     Returns:
         result_tuple (tuple): named tuple of the form
@@ -761,7 +764,6 @@ def aggregate_raster_values_uri(
         TypeError
         OSError
     """
-
     raster_nodata = get_nodata_from_uri(raster_uri)
     out_pixel_size = get_cell_size_from_uri(raster_uri)
     clipped_raster_uri = temporary_filename(suffix='.tif')
@@ -844,8 +846,8 @@ def aggregate_raster_values_uri(
             original_field.GetName(), original_field.GetType())
         subset_layer.CreateField(output_field)
 
-    # Initialize these dictionaries to have the shapefile fields in the original
-    # datasource even if we don't pick up a value later
+    # Initialize these dictionaries to have the shapefile fields in the
+    # original datasource even if we don't pick up a value later
 
     # This will store the sum/count with index of shapefile attribute
     if shapefile_field is not None:
@@ -858,9 +860,9 @@ def aggregate_raster_values_uri(
         (shapefile_id, 0.0) for shapefile_id in shapefile_table.iterkeys()])
     aggregate_dict_values = current_iteration_shapefiles.copy()
     aggregate_dict_counts = current_iteration_shapefiles.copy()
-    # Populate the means and totals with something in case the underlying raster
-    # doesn't exist for those features.  we use -9999 as a recognizable nodata
-    # value.
+    # Populate the means and totals with something in case the underlying
+    # raster doesn't exist for those features.  we use -9999 as a recognizable
+    # nodata value.
     for shapefile_id in shapefile_table:
         result_tuple.pixel_mean[shapefile_id] = -9999
         result_tuple.total[shapefile_id] = -9999
@@ -871,13 +873,14 @@ def aggregate_raster_values_uri(
     pixel_max_dict = pixel_min_dict.copy()
 
     # Loop over each polygon and aggregate
-    minimal_polygon_sets = calculate_disjoint_polygon_set(
-        shapefile_uri)
+    if polygons_might_overlap:
+        minimal_polygon_sets = calculate_disjoint_polygon_set(
+            shapefile_uri)
+    else:
+        minimal_polygon_sets = [
+            set([feat.GetFID() for feat in shapefile_layer])]
 
     clipped_band = clipped_raster.GetRasterBand(1)
-    n_rows = clipped_band.YSize
-    n_cols = clipped_band.XSize
-    block_col_size, block_row_size = clipped_band.GetBlockSize()
 
     for polygon_set in minimal_polygon_sets:
         # add polygons to subset_layer
@@ -893,9 +896,9 @@ def aggregate_raster_values_uri(
 
         gdal.RasterizeLayer(
             mask_dataset, [1], subset_layer, **rasterize_layer_args)
+        mask_dataset.FlushCache()
 
         # get feature areas
-        num_features = subset_layer.GetFeatureCount()
         feature_areas = collections.defaultdict(int)
         for feature in subset_layer:
             # feature = subset_layer.GetFeature(index)
@@ -918,63 +921,53 @@ def aggregate_raster_values_uri(
             subset_layer.DeleteFeature(fid)
         subset_layer_datasouce.SyncToDisk()
 
-        mask_dataset.FlushCache()
-        mask_band = mask_dataset.GetRasterBand(1)
         current_iteration_attribute_ids = set()
 
-        for global_block_row in xrange(int(numpy.ceil(float(n_rows) / block_row_size))):
-            for global_block_col in xrange(int(numpy.ceil(float(n_cols) / block_col_size))):
-                global_col = global_block_col*block_col_size
-                global_row = global_block_row*block_row_size
-                global_col_size = min((global_block_col+1)*block_col_size, n_cols) - global_col
-                global_row_size = min((global_block_row+1)*block_row_size, n_rows) - global_row
-                mask_array = mask_band.ReadAsArray(
-                    global_col, global_row, global_col_size, global_row_size)
-                clipped_array = clipped_band.ReadAsArray(
-                    global_col, global_row, global_col_size, global_row_size)
+        for mask_offsets, mask_block in iterblocks(mask_uri):
+            clipped_block = clipped_band.ReadAsArray(**mask_offsets)
 
-                unique_ids = numpy.unique(mask_array)
-                current_iteration_attribute_ids = (
-                    current_iteration_attribute_ids.union(unique_ids))
-                for attribute_id in unique_ids:
-                    # ignore masked values
-                    if attribute_id == mask_nodata:
-                        continue
+            unique_ids = numpy.unique(mask_block)
+            current_iteration_attribute_ids = (
+                current_iteration_attribute_ids.union(unique_ids))
+            for attribute_id in unique_ids:
+                # ignore masked values
+                if attribute_id == mask_nodata:
+                    continue
 
-                    # Only consider values which lie in the polygon for attribute_id
-                    masked_values = clipped_array[
-                        (mask_array == attribute_id) &
-                        (~numpy.isnan(clipped_array))]
-                    # Remove the nodata and ignore values for later processing
-                    masked_values_nodata_removed = (
-                        masked_values[~numpy.in1d(
-                            masked_values, [raster_nodata] + ignore_value_list).
-                            reshape(masked_values.shape)])
+                # Consider values which lie in the polygon for attribute_id
+                masked_values = clipped_block[
+                    (mask_block == attribute_id) &
+                    (~numpy.isnan(clipped_block))]
+                # Remove the nodata and ignore values for later processing
+                masked_values_nodata_removed = (
+                    masked_values[~numpy.in1d(
+                        masked_values, [raster_nodata] + ignore_value_list).
+                                  reshape(masked_values.shape)])
 
-                    # Find the min and max which might not yet be calculated
-                    if masked_values_nodata_removed.size > 0:
-                        if pixel_min_dict[attribute_id] is None:
-                            pixel_min_dict[attribute_id] = numpy.min(
-                                masked_values_nodata_removed)
-                            pixel_max_dict[attribute_id] = numpy.max(
-                                masked_values_nodata_removed)
-                        else:
-                            pixel_min_dict[attribute_id] = min(
-                                pixel_min_dict[attribute_id],
-                                numpy.min(masked_values_nodata_removed))
-                            pixel_max_dict[attribute_id] = max(
-                                pixel_max_dict[attribute_id],
-                                numpy.max(masked_values_nodata_removed))
-
-                    if ignore_nodata:
-                        # Only consider values which are not nodata values
-                        aggregate_dict_counts[attribute_id] += (
-                            masked_values_nodata_removed.size)
+                # Find the min and max which might not yet be calculated
+                if masked_values_nodata_removed.size > 0:
+                    if pixel_min_dict[attribute_id] is None:
+                        pixel_min_dict[attribute_id] = numpy.min(
+                            masked_values_nodata_removed)
+                        pixel_max_dict[attribute_id] = numpy.max(
+                            masked_values_nodata_removed)
                     else:
-                        aggregate_dict_counts[attribute_id] += masked_values.size
+                        pixel_min_dict[attribute_id] = min(
+                            pixel_min_dict[attribute_id],
+                            numpy.min(masked_values_nodata_removed))
+                        pixel_max_dict[attribute_id] = max(
+                            pixel_max_dict[attribute_id],
+                            numpy.max(masked_values_nodata_removed))
 
-                    aggregate_dict_values[attribute_id] += numpy.sum(
-                        masked_values_nodata_removed)
+                if ignore_nodata:
+                    # Only consider values which are not nodata values
+                    aggregate_dict_counts[attribute_id] += (
+                        masked_values_nodata_removed.size)
+                else:
+                    aggregate_dict_counts[attribute_id] += masked_values.size
+
+                aggregate_dict_values[attribute_id] += numpy.sum(
+                    masked_values_nodata_removed)
 
         # Initialize the dictionary to have an n_pixels field that contains the
         # counts of all the pixels used in the calculation.
@@ -984,7 +977,7 @@ def aggregate_raster_values_uri(
         # Don't want to calculate stats for the nodata
         current_iteration_attribute_ids.discard(mask_nodata)
         for attribute_id in current_iteration_attribute_ids:
-            if threshold_amount_lookup != None:
+            if threshold_amount_lookup is not None:
                 adjusted_amount = max(
                     aggregate_dict_values[attribute_id] -
                     threshold_amount_lookup[attribute_id], 0.0)
@@ -1002,7 +995,7 @@ def aggregate_raster_values_uri(
                 # divide by 10000 to get Ha.  Notice that's in the denominator
                 # so the * 10000 goes on the top
                 if feature_areas[attribute_id] == 0:
-                    LOGGER.warn('feature_areas[%d]=0' % (attribute_id))
+                    LOGGER.warn('feature_areas[%d]=0', attribute_id)
                     result_tuple.hectare_mean[attribute_id] = 0.0
                 else:
                     result_tuple.hectare_mean[attribute_id] = (
@@ -1016,8 +1009,8 @@ def aggregate_raster_values_uri(
         except DatasetUnprojected:
             # doesn't make sense to calculate the hectare mean
             LOGGER.warn(
-                'raster %s is not projected setting hectare_mean to {}'
-                % raster_uri)
+                'raster %s is not projected setting hectare_mean to {}',
+                raster_uri)
             result_tuple.hectare_mean.clear()
 
     # Make sure the dataset is closed and cleaned up
@@ -1025,7 +1018,6 @@ def aggregate_raster_values_uri(
     gdal.Dataset.__swig_destroy__(mask_dataset)
     mask_dataset = None
 
-    # Make sure the dataset is closed and cleaned up
     clipped_band = None
     gdal.Dataset.__swig_destroy__(clipped_raster)
     clipped_raster = None
@@ -2981,6 +2973,64 @@ def distance_transform_edt(
         LOGGER.warn("couldn't remove file %s", mask_as_byte_uri)
 
 
+def _next_regular(target):
+    """
+    Find the next regular number greater than or equal to target.
+
+    Regular numbers are composites of the prime factors 2, 3, and 5.
+    Also known as 5-smooth numbers or Hamming numbers, these are the optimal
+    size for inputs to FFTPACK.
+
+    This source was taken directly from scipy.signaltools and saves us from
+    having to access a protected member in a library that could change in
+    future releases:
+
+    https://github.com/scipy/scipy/blob/v0.17.1/scipy/signal/signaltools.py#L211
+
+    Parameters:
+        target (int): a positive integer to start to find the next Hamming
+            number.
+
+    Returns:
+        The next regular number greater than or equal to `target`.
+    """
+    if target <= 6:
+        return target
+
+    # Quickly check if it's already a power of 2
+    if not (target & (target-1)):
+        return target
+
+    match = float('inf')  # Anything found will be smaller
+    p5 = 1
+    while p5 < target:
+        p35 = p5
+        while p35 < target:
+            # Ceiling integer division, avoiding conversion to float
+            # (quotient = ceil(target / p35))
+            quotient = -(-target // p35)
+
+            # Quickly find next power of 2 >= quotient
+            p2 = 2**((quotient - 1).bit_length())
+
+            N = p2 * p35
+            if N == target:
+                return N
+            elif N < match:
+                match = N
+            p35 *= 3
+            if p35 == target:
+                return p35
+        if p35 < match:
+            match = p35
+        p5 *= 5
+        if p5 == target:
+            return p5
+    if p5 < match:
+        match = p5
+    return match
+
+
 def convolve_2d_uri(signal_path, kernel_path, output_path):
     """Convolve 2D kernel over 2D signal.
 
@@ -3027,6 +3077,26 @@ def convolve_2d_uri(signal_path, kernel_path, output_path):
     output_ds = gdal.Open(output_path, gdal.GA_Update)
     output_band = output_ds.GetRasterBand(1)
 
+    def _fft_cache(fshape, xoff, yoff, data_block):
+        """Helper function to remember the last computed fft.
+
+        Parameters:
+            fshape (numpy.ndarray): shape of fft
+            xoff,yoff (int): offsets of the data block
+            data_block (numpy.ndarray): the 2D array to calculate the FFT
+                on if not already calculated.
+
+        Returns:
+            fft transformed data_block of fshape size."""
+        cache_key = (fshape[0], fshape[1], xoff, yoff)
+        if cache_key != _fft_cache.key:
+            _fft_cache.cache = numpy.fft.rfftn(data_block, fshape)
+            _fft_cache.key = cache_key
+        return _fft_cache.cache
+
+    _fft_cache.cache = None
+    _fft_cache.key = None
+
     LOGGER.info('starting convolve')
     last_time = time.time()
     signal_data = {}
@@ -3040,7 +3110,6 @@ def convolve_2d_uri(signal_path, kernel_path, output_path):
         signal_nodata_mask = signal_block == s_nodata
         signal_block[signal_nodata_mask] = 0.0
 
-        last_shape = None
         for kernel_data, kernel_block in iterblocks(k_path):
             left_index_raster = (
                 signal_data['xoff'] - n_cols_kernel / 2 + kernel_data['xoff'])
@@ -3072,19 +3141,18 @@ def convolve_2d_uri(signal_path, kernel_path, output_path):
                 numpy.array(kernel_block.shape) - 1)
 
             # add zero padding so FFT is fast
-            fshape = [
-                scipy.signal.signaltools._next_regular(int(d)) for d in shape]
+            fshape = [_next_regular(int(d)) for d in shape]
+
+            kernel_fft = numpy.fft.rfftn(kernel_block, fshape)
+            signal_fft = _fft_cache(
+                fshape, signal_data['xoff'], signal_data['yoff'],
+                signal_block)
+
+            # this variable determines the output slice that doesn't include
+            # the padded array region made for fast FFTs.
             fslice = tuple([slice(0, int(sz)) for sz in shape])
-
-            # check to see if the previous kernel was calculated, reuse if so
-            if last_shape is None or (shape != last_shape).any():
-                cached_signal_fft = numpy.fft.rfftn(signal_block, fshape)
-                last_shape = shape
-
             # classic FFT convolution
-            result = numpy.fft.irfftn(
-                numpy.fft.rfftn(kernel_block, fshape) * cached_signal_fft,
-                fshape)[fslice]
+            result = numpy.fft.irfftn(signal_fft * kernel_fft, fshape)[fslice]
 
             left_index_result = 0
             right_index_result = result.shape[1]
