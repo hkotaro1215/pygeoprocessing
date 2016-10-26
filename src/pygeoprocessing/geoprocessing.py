@@ -782,11 +782,8 @@ def aggregate_raster_values_uri(
     shapefile = ogr.Open(shapefile_uri)
     shapefile_layer = shapefile.GetLayer()
     rasterize_layer_args = {
-        'options': [],
+        'options': ['ALL_TOUCHED=%s' % str(all_touched).upper()],
     }
-
-    if all_touched:
-        rasterize_layer_args['options'].append('ALL_TOUCHED=TRUE')
 
     if shapefile_field is not None:
         # Make sure that the layer name refers to an integer
@@ -802,7 +799,7 @@ def aggregate_raster_values_uri(
         if field_def.GetTypeName() != 'Integer':
             raise TypeError(
                 'Can only aggregate by integer based fields, requested '
-                'field is of type  %s' % field_def.GetTypeName())
+                'field is of type  %s' % fd.GetTypeName())
         # Adding the rasterize by attribute option
         rasterize_layer_args['options'].append(
             'ATTRIBUTE=%s' % shapefile_field)
@@ -1979,27 +1976,28 @@ def align_dataset_list(
     list_lengths = [
         len(dataset_uri_list), len(dataset_out_uri_list),
         len(resample_method_list)]
-    if not reduce(lambda x, y: x if x == y else False, list_lengths):
-        raise Exception(
+    if len(set(list_lengths)) != 1:
+        raise ValueError(
             "dataset_uri_list, dataset_out_uri_list, and "
             "resample_method_list must be the same length "
             " current lengths are %s" % (str(list_lengths)))
 
     if assert_datasets_projected:
         assert_datasets_in_same_projection(dataset_uri_list)
+
     if mode not in ["union", "intersection", "dataset"]:
-        raise Exception("Unknown mode %s" % (str(mode)))
+        raise ValueError("Unknown mode %s" % (str(mode)))
 
     if dataset_to_align_index >= len(dataset_uri_list):
-        raise Exception(
+        raise ValueError(
             "Alignment index is out of bounds of the datasets index: %s"
             "n_elements %s" % (dataset_to_align_index, len(dataset_uri_list)))
     if mode == "dataset" and dataset_to_bound_index is None:
-        raise Exception(
+        raise ValueError(
             "Mode is 'dataset' but dataset_to_bound_index is not defined")
     if mode == "dataset" and (dataset_to_bound_index < 0 or
                               dataset_to_bound_index >= len(dataset_uri_list)):
-        raise Exception(
+        raise ValueError(
             "dataset_to_bound_index is out of bounds of the datasets index: %s"
             "n_elements %s" % (dataset_to_bound_index, len(dataset_uri_list)))
 
@@ -2028,7 +2026,8 @@ def align_dataset_list(
     else:
         bounding_box = reduce(
             functools.partial(merge_bounding_boxes, mode=mode),
-            [get_bounding_box(dataset_uri) for dataset_uri in dataset_uri_list])
+            [get_bounding_box(dataset_uri) for dataset_uri in
+             dataset_uri_list])
 
     if aoi_uri is not None:
         bounding_box = merge_bounding_boxes(
@@ -2036,8 +2035,8 @@ def align_dataset_list(
 
     if (bounding_box[0] >= bounding_box[2] or
             bounding_box[1] <= bounding_box[3]) and mode == "intersection":
-        raise Exception("The datasets' intersection is empty "
-                        "(i.e., not all the datasets touch each other).")
+        raise ValueError("The datasets' intersection is empty "
+                         "(i.e., not all the datasets touch each other).")
 
     if dataset_to_align_index >= 0:
         # bounding box needs alignment
@@ -2056,13 +2055,10 @@ def align_dataset_list(
     for original_dataset_uri, out_dataset_uri, resample_method, index in zip(
             dataset_uri_list, dataset_out_uri_list, resample_method_list,
             range(len(dataset_uri_list))):
-        current_time = time.time()
-        if current_time - last_time > 5.0:
-            last_time = current_time
-            LOGGER.info(
+        last_time = _invoke_timed_callback(
+            last_time, lambda: LOGGER.info(
                 "align_dataset_list aligning dataset %d of %d",
-                index, len(dataset_uri_list))
-
+                index, len(dataset_uri_list)), _LOGGING_PERIOD)
         resize_and_resample_dataset_uri(
             original_dataset_uri, bounding_box, out_pixel_size,
             out_dataset_uri, resample_method)
@@ -2084,10 +2080,7 @@ def align_dataset_list(
         mask_band = mask_dataset.GetRasterBand(1)
         aoi_datasource = ogr.Open(aoi_uri)
         aoi_layer = aoi_datasource.GetLayer()
-        if all_touched:
-            option_list = ["ALL_TOUCHED=TRUE"]
-        else:
-            option_list = []
+        option_list = ["ALL_TOUCHED=%s" % str(all_touched).upper()]
         gdal.RasterizeLayer(
             mask_dataset, [1], aoi_layer, burn_values=[1], options=option_list)
         mask_row = numpy.zeros((1, n_cols), dtype=numpy.int8)
@@ -2113,7 +2106,10 @@ def align_dataset_list(
         mask_band = None
         gdal.Dataset.__swig_destroy__(mask_dataset)
         mask_dataset = None
-        os.remove(mask_uri)
+        try:
+            os.remove(mask_uri)
+        except OSError:
+            LOGGER.warn("Couldn't clean up temporary mask_uri: %s", mask_uri)
 
         # Close and clean up datasource
         aoi_layer = None
@@ -2303,17 +2299,6 @@ def vectorize_datasets(
         aligned_datasets[0], dataset_out_uri, 'GTiff', nodata_out,
         datatype_out, dataset_options=dataset_options)
     output_band = output_dataset.GetRasterBand(1)
-    block_size = output_band.GetBlockSize()
-    # makes sense to get the largest block size possible to reduce the number
-    # of expensive readasarray calls
-    for current_block_size in [band.GetBlockSize() for band in aligned_bands]:
-        if (current_block_size[0] * current_block_size[1] >
-                block_size[0] * block_size[1]):
-            block_size = current_block_size
-
-    cols_per_block, rows_per_block = block_size[0], block_size[1]
-    n_col_blocks = int(math.ceil(n_cols / float(cols_per_block)))
-    n_row_blocks = int(math.ceil(n_rows / float(rows_per_block)))
 
     # If there's an AOI, mask it out
     if aoi_uri is not None:
@@ -2324,10 +2309,8 @@ def vectorize_datasets(
         mask_band = mask_dataset.GetRasterBand(1)
         aoi_datasource = ogr.Open(aoi_uri)
         aoi_layer = aoi_datasource.GetLayer()
-        if all_touched:
-            option_list = ["ALL_TOUCHED=TRUE"]
-        else:
-            option_list = []
+        # account for possible ALL_TOUCHED flag
+        option_list = ["ALL_TOUCHED=%s" % str(all_touched).upper]
         gdal.RasterizeLayer(
             mask_dataset, [1], aoi_layer, burn_values=[1], options=option_list)
         aoi_layer = None
@@ -2341,65 +2324,41 @@ def vectorize_datasets(
             dataset_pixel_op, otypes=[_gdal_to_numpy_type(output_band)])
 
     last_time = time.time()
-
-    last_row_block_width = None
-    last_col_block_width = None
-    for row_block_index in xrange(n_row_blocks):
-        row_offset = row_block_index * rows_per_block
-        row_block_width = n_rows - row_offset
-        if row_block_width > rows_per_block:
-            row_block_width = rows_per_block
-
-        for col_block_index in xrange(n_col_blocks):
-            col_offset = col_block_index * cols_per_block
-            col_block_width = n_cols - col_offset
-            if col_block_width > cols_per_block:
-                col_block_width = cols_per_block
-
-            current_time = time.time()
-            if current_time - last_time > 5.0:
-                LOGGER.info(
-                    'raster stack calculation approx. %.2f%% complete',
-                    ((row_block_index * n_col_blocks + col_block_index) /
-                     float(n_row_blocks * n_col_blocks) * 100.0))
-                last_time = current_time
-
-            #This is true at least once since last_* initialized with None
-            if (last_row_block_width != row_block_width or
-                    last_col_block_width != col_block_width):
-                dataset_blocks = [
-                    numpy.zeros(
-                        (row_block_width, col_block_width),
-                        dtype=_gdal_to_numpy_type(band)) for band in aligned_bands]
-
-                if aoi_uri != None:
-                    mask_array = numpy.zeros(
-                        (row_block_width, col_block_width), dtype=numpy.int8)
-
-                last_row_block_width = row_block_width
-                last_col_block_width = col_block_width
-
-            for dataset_index in xrange(len(aligned_bands)):
-                aligned_bands[dataset_index].ReadAsArray(
-                    xoff=col_offset, yoff=row_offset,
-                    win_xsize=col_block_width,
-                    win_ysize=row_block_width,
-                    buf_obj=dataset_blocks[dataset_index])
-
-            out_block = dataset_pixel_op(*dataset_blocks)
-
-            # Mask out the row if there is a mask
+    block_offset = None
+    dataset_blocks = None
+    last_blocksize = None
+    for block_offset in iterblocks(dataset_uri_list[0], offset_only=True):
+        last_time = _invoke_timed_callback(
+            last_time, lambda: LOGGER.info(
+                'raster stack calculation approx. %.2f%% complete',
+                100.0 * ((n_rows - block_offset['yoff']) *
+                         n_cols - block_offset['xoff']) / (n_rows * n_cols)),
+            _LOGGING_PERIOD)
+        blocksize = (block_offset['win_ysize'], block_offset['win_xsize'])
+        if last_blocksize != blocksize:
+            dataset_blocks = [numpy.zeros(
+                blocksize,
+                dtype=_gdal_to_numpy_type(band)) for band in aligned_bands]
             if aoi_uri is not None:
-                mask_band.ReadAsArray(
-                    xoff=col_offset, yoff=row_offset,
-                    win_xsize=col_block_width,
-                    win_ysize=row_block_width,
-                    buf_obj=mask_array)
-                out_block[mask_array == 0] = nodata_out
+                mask_array = numpy.zeros(blocksize, dtype=numpy.int8)
+            last_blocksize = blocksize
 
-            output_band.WriteArray(
-                out_block[0:row_block_width, 0:col_block_width],
-                xoff=col_offset, yoff=row_offset)
+        for dataset_index in xrange(len(aligned_bands)):
+            band_data = block_offset.copy()
+            band_data['buf_obj'] = dataset_blocks[dataset_index]
+            aligned_bands[dataset_index].ReadAsArray(**band_data)
+
+        out_block = dataset_pixel_op(*dataset_blocks)
+
+        # Mask out the row if there is a mask
+        if aoi_uri is not None:
+            mask_data = block_offset.copy()
+            mask_data['buf_obj'] = mask_array
+            mask_band.ReadAsArray(**mask_data)
+            out_block[mask_array == 0] = nodata_out
+
+        output_band.WriteArray(
+            out_block, xoff=block_offset['xoff'], yoff=block_offset['yoff'])
 
     # Making sure the band and dataset is flushed and not in memory before
     # adding stats
@@ -2416,7 +2375,10 @@ def vectorize_datasets(
         mask_band = None
         gdal.Dataset.__swig_destroy__(mask_dataset)
         mask_dataset = None
-        os.remove(mask_uri)
+        try:
+            os.remove(mask_uri)
+        except OSError:
+            LOGGER.warn("couldn't delete file %s", mask_uri)
     aligned_bands = None
     for dataset in aligned_datasets:
         gdal.Dataset.__swig_destroy__(dataset)
@@ -2428,8 +2390,7 @@ def vectorize_datasets(
                 os.remove(temp_dataset_uri)
             except OSError:
                 LOGGER.warn("couldn't delete file %s", temp_dataset_uri)
-    calculate_raster_stats_uri(dataset_out_uri
-)
+    calculate_raster_stats_uri(dataset_out_uri)
 
 def get_lookup_from_table(table_uri, key_field):
     """Read table file in as dictionary.
@@ -2544,14 +2505,14 @@ def extract_datasource_table_by_key(datasource_uri, key_field):
     # Loop through each feature and build up the dictionary representing the
     # attribute table
     attribute_dictionary = {}
-    for feature_index in xrange(layer.GetFeatureCount()):
-        feature = layer.GetFeature(feature_index)
+    for feature in layer:
         feature_fields = {}
         for field_name in field_names:
             feature_fields[field_name] = feature.GetField(field_name)
         key_value = feature.GetField(key_field)
         attribute_dictionary[key_value] = feature_fields
 
+    layer.ResetReading()
     # Explictly clean up the layers so the files close
     layer = None
     datasource = None
