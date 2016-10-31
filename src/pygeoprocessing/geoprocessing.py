@@ -918,102 +918,52 @@ def clip_dataset_uri(
         assert_datasets_projected=assert_projections,
         process_pool=process_pool, vectorize_op=False, all_touched=all_touched)
 
+def get_raster_info(raster_path):
+    """Get information about a GDAL raster dataset.
 
-def create_rat_uri(dataset_uri, attr_dict, column_name):
-    """Create a raster attribute table.
-
-    URI wrapper for create_rat.
-
-    Args:
-        dataset_uri (string): a GDAL raster dataset to create the RAT for (...)
-        attr_dict (dict): a dictionary with keys that point to a primitive type
-           {integer_id_1: value_1, ... integer_id_n: value_n}
-        column_name (string): a string for the column name that maps the values
-    """
-    dataset = gdal.Open(dataset_uri, gdal.GA_Update)
-    create_rat(dataset, attr_dict, column_name)
-
-    # Make sure the dataset is closed and cleaned up
-    gdal.Dataset.__swig_destroy__(dataset)
-    dataset = None
-
-
-def create_rat(dataset, attr_dict, column_name):
-    """Create a raster attribute table.
-
-    Args:
-        dataset: a GDAL raster dataset to create the RAT for (...)
-        attr_dict (dict): a dictionary with keys that point to a primitive type
-           {integer_id_1: value_1, ... integer_id_n: value_n}
-        column_name (string): a string for the column name that maps the values
+    Parameters:
+       raster_path (String): a path to a GDAL raster.
 
     Returns:
-        dataset (gdal.Dataset): a GDAL raster dataset with an updated RAT
+        raster_properties (dictionary): a dictionary with the properties
+            stored under relevant keys.
+
+            'pixel_size' (tuple): (pixel x-size, pixel y-size) from
+                geotransform.
+            'mean_pixel_size' (float): the average size of the absolute value
+                of each pixel size element.
+            'raster_size' (tuple):  number of raster pixels in (x, y)
+                direction.
+            'nodata' (float or list): if number of bands is 1, then this value
+                is the nodata value of the single band, otherwise a list of
+                the nodata values in increasing band index
+            'n_bands' (int): number of bands in the raster.
     """
-    band = dataset.GetRasterBand(1)
-    rat = gdal.RasterAttributeTable()
-    rat.SetRowCount(len(attr_dict))
+    raster_properties = {}
+    raster = gdal.Open(raster_path)
+    geo_transform = raster.GetGeoTransform()
+    raster_properties['pixel_size'] = (geo_transform[1], geo_transform[5])
+    raster_properties['mean_pixel_size'] = (
+        (abs(geo_transform[1]) + abs(geo_transform[5])) / 2.0)
+    raster_properties['raster_size'] = (
+        raster.GetRasterBand(1).XSize,
+        raster.GetRasterBand(1).YSize)
+    raster_properties['n_bands'] = raster.RasterCount
+    raster_properties['nodata'] = [
+        raster.GetRasterBand(index).GetNoDataValue() for index in xrange(
+            1, raster_properties['n_bands']+1)]
+    if len(raster_properties['nodata']) == 1:
+        raster_properties['nodata'] = raster_properties['nodata'][0]
 
-    # create columns
-    rat.CreateColumn('Value', gdal.GFT_Integer, gdal.GFU_MinMax)
-    rat.CreateColumn(column_name, gdal.GFT_String, gdal.GFU_Name)
+    raster_properties['bounding_box'] = [
+        geo_transform[0], geo_transform[3],
+        (geo_transform[0] +
+         raster_properties['raster_size'][0] * geo_transform[1]),
+        (geo_transform[3] +
+         raster_properties['raster_size'][1] * geo_transform[5])]
 
-    row_count = 0
-    for key in sorted(attr_dict.keys()):
-        rat.SetValueAsInt(row_count, 0, int(key))
-        rat.SetValueAsString(row_count, 1, attr_dict[key])
-        row_count += 1
-
-    band.SetDefaultRAT(rat)
-    return dataset
-
-
-def get_raster_properties_uri(dataset_uri):
-    """Get width, height, X size, and Y size of the dataset as dictionary.
-
-    Wrapper function for get_raster_properties() that passes in the dataset
-    URI instead of the datasets itself
-
-    Args:
-        dataset_uri (string): a URI to a GDAL raster dataset
-
-    Returns:
-        value (dictionary): a dictionary with the properties stored under
-            relevant keys. The current list of things returned is:
-            width (w-e pixel resolution), height (n-s pixel resolution),
-            XSize, YSize
-    """
-    dataset = gdal.Open(dataset_uri)
-    value = get_raster_properties(dataset)
-
-    # Make sure the dataset is closed and cleaned up
-    gdal.Dataset.__swig_destroy__(dataset)
-    dataset = None
-
-    return value
-
-
-def get_raster_properties(dataset):
-    """Get width, height, X size, and Y size of the dataset as dictionary.
-
-    *This function can be expanded to return more properties if needed*
-
-    Args:
-       dataset (gdal.Dataset): a GDAL raster dataset to get the properties from
-
-    Returns:
-        dataset_dict (dictionary): a dictionary with the properties stored
-            under relevant keys. The current list of things returned is:
-            width (w-e pixel resolution), height (n-s pixel resolution),
-            XSize, YSize
-    """
-    dataset_dict = {}
-    geo_transform = dataset.GetGeoTransform()
-    dataset_dict['width'] = float(geo_transform[1])
-    dataset_dict['height'] = float(geo_transform[5])
-    dataset_dict['x_size'] = dataset.GetRasterBand(1).XSize
-    dataset_dict['y_size'] = dataset.GetRasterBand(1).YSize
-    return dataset_dict
+    raster = None
+    return raster_properties
 
 
 def reproject_dataset_uri(
@@ -1282,71 +1232,6 @@ def unique_raster_values(dataset):
         unique_list.remove(nodata)
     return unique_list
 
-
-def get_rat_as_dictionary_uri(dataset_uri):
-    """Get Raster Attribute Table of the first band of dataset as a dictionary.
-
-    Args:
-        dataset (string): a GDAL dataset that has a RAT associated with the
-            first band
-
-    Returns:
-        value (dictionary): a 2D dictionary where the first key is the column
-            name and second is the row number
-    """
-    dataset = gdal.Open(dataset_uri)
-    value = get_rat_as_dictionary(dataset)
-
-    # Close and clean up dataset
-    gdal.Dataset.__swig_destroy__(dataset)
-    dataset = None
-
-    return value
-
-
-def get_rat_as_dictionary(dataset):
-    """Get Raster Attribute Table of the first band of dataset as a dictionary.
-
-    Args:
-        dataset (gdal.Dataset): a GDAL dataset that has a RAT associated with
-            the first band
-
-    Returns:
-        rat_dictionary (dictionary): a 2D dictionary where the first key is the
-            column name and second is the row number
-    """
-    band = dataset.GetRasterBand(1)
-    rat = band.GetDefaultRAT()
-    n_columns = rat.GetColumnCount()
-    n_rows = rat.GetRowCount()
-    rat_dictionary = {}
-
-    for col_index in xrange(n_columns):
-        # Initialize an empty list to store row data and figure out the type
-        # of data stored in that column.
-        col_type = rat.GetTypeOfCol(col_index)
-        col_name = rat.GetNameOfCol(col_index)
-        rat_dictionary[col_name] = []
-
-        # Now burn through all the rows to populate the column
-        for row_index in xrange(n_rows):
-            # This bit of python ugliness handles the known 3 types of gdal
-            # RAT fields.
-            if col_type == gdal.GFT_Integer:
-                value = rat.GetValueAsInt(row_index, col_index)
-            elif col_type == gdal.GFT_Real:
-                value = rat.GetValueAsDouble(row_index, col_index)
-            else:
-                # If the type is not int or real, default to a string,
-                # I think this is better than testing for a string and raising
-                # an exception if not
-                value = rat.GetValueAsString(row_index, col_index)
-
-            rat_dictionary[col_name].append(value)
-
-    return rat_dictionary
-
-
 def reclassify_dataset_uri(
         dataset_uri, value_map, raster_out_uri, out_datatype, out_nodata,
         exception_flag='values_required', assert_dataset_projected=True):
@@ -1570,35 +1455,6 @@ def assert_datasets_in_same_projection(dataset_uri_list):
         gdal.Dataset.__swig_destroy__(dataset)
     dataset_list = None
     return True
-
-
-def get_bounding_box(dataset_uri):
-    """Get bounding box where coordinates are in projected units.
-
-    Args:
-        dataset_uri (string): a uri to a GDAL dataset
-
-    Returns:
-        bounding_box (list):
-            [upper_left_x, upper_left_y, lower_right_x, lower_right_y] in
-            projected coordinates
-    """
-    dataset = gdal.Open(dataset_uri)
-
-    geotransform = dataset.GetGeoTransform()
-    n_cols = dataset.RasterXSize
-    n_rows = dataset.RasterYSize
-
-    bounding_box = [geotransform[0],
-                    geotransform[3],
-                    geotransform[0] + n_cols * geotransform[1],
-                    geotransform[3] + n_rows * geotransform[5]]
-
-    # Close and cleanup dataset
-    gdal.Dataset.__swig_destroy__(dataset)
-    dataset = None
-
-    return bounding_box
 
 
 def get_datasource_bounding_box(datasource_uri):
@@ -1836,19 +1692,21 @@ def align_dataset_list(
         bb_out = [op(x, y) for op, x, y in zip(comparison_ops, bb1, bb2)]
         return bb_out
 
+    raster_info_list = [get_raster_info(path) for path in dataset_uri_list]
+
     # get the intersecting or unioned bounding box
     if mode == "dataset":
-        bounding_box = get_bounding_box(
-            dataset_uri_list[dataset_to_bound_index])
+        bounding_box = (
+            raster_info_list[dataset_to_bound_index]['bounding_box'])
     else:
         bounding_box = reduce(
             functools.partial(merge_bounding_boxes, mode=mode),
-            [get_bounding_box(dataset_uri) for dataset_uri in
-             dataset_uri_list])
+            [info['bounding_box'] for info in raster_info_list])
 
     if aoi_uri is not None:
         bounding_box = merge_bounding_boxes(
-            bounding_box, get_datasource_bounding_box(aoi_uri), "intersection")
+            bounding_box, get_datasource_bounding_box(aoi_uri),
+            "intersection")
 
     if (bounding_box[0] >= bounding_box[2] or
             bounding_box[1] <= bounding_box[3]) and mode == "intersection":
@@ -1857,10 +1715,10 @@ def align_dataset_list(
 
     if dataset_to_align_index >= 0:
         # bounding box needs alignment
-        align_bounding_box = get_bounding_box(
-            dataset_uri_list[dataset_to_align_index])
-        align_pixel_size = get_cell_size_from_uri(
-            dataset_uri_list[dataset_to_align_index])
+        align_bounding_box = (
+            raster_info_list[dataset_to_align_index]['bounding_box'])
+        align_pixel_size = (
+            raster_info_list[dataset_to_align_index]['mean_pixel_size'])
 
         for index in [0, 1]:
             n_pixels = int(
@@ -1899,7 +1757,8 @@ def align_dataset_list(
         aoi_layer = aoi_datasource.GetLayer()
         option_list = ["ALL_TOUCHED=%s" % str(all_touched).upper()]
         gdal.RasterizeLayer(
-            mask_dataset, [1], aoi_layer, burn_values=[1], options=option_list)
+            mask_dataset, [1], aoi_layer, burn_values=[1],
+            options=option_list)
         mask_row = numpy.zeros((1, n_cols), dtype=numpy.int8)
 
         out_dataset_list = [
