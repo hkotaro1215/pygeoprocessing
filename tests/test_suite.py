@@ -58,6 +58,257 @@ class TestPyGeoprocessing(unittest.TestCase):
         """Clean up remaining files."""
         shutil.rmtree(self.workspace_dir)
 
+    def test_raster_stack_calculator(self):
+        """PGP.geoprocessing: raster_stack_calculator identity test."""
+        pixel_matrix = numpy.ones((5, 5), numpy.int16)
+        reference = sampledata.SRS_COLOMBIA
+        nodata_target = -1
+        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
+        pygeoprocessing.testing.create_raster_on_disk(
+            [pixel_matrix], reference.origin, reference.projection,
+            nodata_target, reference.pixel_size(30), filename=raster_filename)
+
+        target_raster_path = 'new_raster.tif'
+        pygeoprocessing.raster_stack_calculator(
+            [(raster_filename, 1)], lambda x: x, target_raster_path,
+            gdal.GDT_Int32, nodata_target, dataset_options=None,
+            calc_raster_stats=True)
+
+def test_vect_datasets_bad_filelist(self):
+        """PGP.geoprocessing: vect..._datasets expected error for non-list."""
+        pixel_matrix = numpy.ones((5, 5), numpy.int16)
+        reference = sampledata.SRS_COLOMBIA
+        nodata = -1
+        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
+        pygeoprocessing.testing.create_raster_on_disk(
+            [pixel_matrix], reference.origin, reference.projection, nodata,
+            reference.pixel_size(30), filename=raster_filename)
+
+        out_filename = pygeoprocessing.temporary_filename()
+        with self.assertRaises(ValueError):
+            # intentionally passing a filename rather than a list of files
+            # to get an expected exception
+            pygeoprocessing.vectorize_datasets(
+                raster_filename, lambda x: x, out_filename,
+                gdal.GDT_Int32, nodata, 30, 'intersection')
+
+    def test_vect_datasets_output_alias(self):
+        """PGP.geoprocessing: vect..._datasets expected error for aliasing."""
+        pixel_matrix = numpy.ones((5, 5), numpy.int16)
+        reference = sampledata.SRS_COLOMBIA
+        nodata = -1
+        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
+        pygeoprocessing.testing.create_raster_on_disk(
+            [pixel_matrix], reference.origin, reference.projection, nodata,
+            reference.pixel_size(30), filename=raster_filename)
+
+        with self.assertRaises(ValueError):
+            # intentionally passing a filename rather than a list of files
+            # to get an expected exception
+            pygeoprocessing.vectorize_datasets(
+                [raster_filename], lambda x: x, raster_filename,
+                gdal.GDT_Int32, nodata, 30, 'intersection')
+
+    def test_vec_datasets_oserror(self):
+        """PGP.geoprocessing: vec_datasets os.remove OSError handling."""
+        pixel_matrix = numpy.ones((5, 5), numpy.int16)
+        reference = sampledata.SRS_COLOMBIA
+        nodata = -1
+        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
+        pygeoprocessing.testing.create_raster_on_disk(
+            [pixel_matrix], reference.origin, reference.projection, nodata,
+            reference.pixel_size(30), filename=raster_filename)
+
+        polygons = [
+            Polygon([
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                ]),
+        ]
+        aoi_filename = os.path.join(self.workspace_dir, 'aoi')
+        pygeoprocessing.testing.create_vector_on_disk(
+            polygons, reference.projection, filename=aoi_filename)
+
+        out_filename = os.path.join(self.workspace_dir, 'out.tif')
+        with mock.patch.object(
+                os, 'remove', return_value=None) as os_remove_mock:
+            try:
+                os_remove_mock.side_effect = OSError('Mock OSError')
+                pygeoprocessing.vectorize_datasets(
+                    [raster_filename], lambda x: x, out_filename,
+                    gdal.GDT_Int32, nodata, 30, 'intersection',
+                    aoi_uri=aoi_filename)
+            except OSError as error:
+                self.fail("Unexpected OSError was raised %s" % error)
+
+        pygeoprocessing.testing.assert_rasters_equal(
+            raster_filename, out_filename, rel_tol=1e-9)
+
+    def test_vect_datasets_bad_bbs(self):
+        """PGP.geoprocessing: vect..._datasets expected error on bad BBox."""
+        pixel_matrix = numpy.ones((5, 5), numpy.int16)
+        reference = sampledata.SRS_COLOMBIA
+        nodata = -1
+        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
+        pygeoprocessing.testing.create_raster_on_disk(
+            [pixel_matrix], reference.origin, reference.projection, nodata,
+            reference.pixel_size(30), filename=raster_filename)
+
+        out_filename = pygeoprocessing.temporary_filename()
+        with self.assertRaises(ValueError):
+            # intentionally passing a filename rather than a list of files
+            # to get an expected exception
+            pygeoprocessing.vectorize_datasets(
+                [raster_filename], lambda x: x, out_filename,
+                gdal.GDT_Int32, nodata, 30, 'bad_mode')
+
+    def test_vect_datasets_identity(self):
+        """PGP.geoprocessing: vectorize_datasets f(x)=x."""
+        pixel_matrix = numpy.ones((5, 5), numpy.int16)
+        reference = sampledata.SRS_COLOMBIA
+        nodata = -1
+        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
+        pygeoprocessing.testing.create_raster_on_disk(
+            [pixel_matrix], reference.origin, reference.projection, nodata,
+            reference.pixel_size(30), filename=raster_filename)
+
+        out_filename = os.path.join(self.workspace_dir, 'out.tif')
+        pygeoprocessing.vectorize_datasets(
+            [raster_filename], lambda x: x, out_filename, gdal.GDT_Int32,
+            nodata, 30, 'intersection')
+
+        pygeoprocessing.testing.assert_rasters_equal(
+            raster_filename, out_filename, rel_tol=1e-9)
+
+    def test_vect_datasets_identity_aoi(self):
+        """PGP.geoprocessing: vectorize_datasets f(x)=x with AOI."""
+        pixel_matrix = numpy.ones((5, 5), numpy.int16)
+        reference = sampledata.SRS_COLOMBIA
+        nodata = -1
+        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
+        pygeoprocessing.testing.create_raster_on_disk(
+            [pixel_matrix], reference.origin, reference.projection, nodata,
+            reference.pixel_size(30), filename=raster_filename)
+
+        polygons = [
+            Polygon([
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                ]),
+        ]
+        aoi_filename = os.path.join(self.workspace_dir, 'aoi')
+        pygeoprocessing.testing.create_vector_on_disk(
+            polygons, reference.projection, filename=aoi_filename)
+
+        out_filename = os.path.join(self.workspace_dir, 'out.tif')
+        pygeoprocessing.vectorize_datasets(
+            [raster_filename], lambda x: x, out_filename, gdal.GDT_Int32,
+            nodata, 30, 'intersection', aoi_uri=aoi_filename)
+
+        pygeoprocessing.testing.assert_rasters_equal(
+            raster_filename, out_filename, rel_tol=1e-9)
+
+
+
+    def test_reproject_raster(self):
+        """PGP: test reproject raster."""
+        reference = sampledata.SRS_COLOMBIA
+
+        pixel_matrix = numpy.ones((5, 10), numpy.int16)
+        pixel_matrix[2:4:, 2:4] = 2
+        reference = sampledata.SRS_COLOMBIA
+        nodata = -1.0
+        pixel_matrix[0, 0] = nodata
+        base_raster_path = os.path.join('.', 'base.tif')
+        pygeoprocessing.testing.create_raster_on_disk(
+            [pixel_matrix], reference.origin, reference.projection, nodata,
+            reference.pixel_size(30), filename=base_raster_path)
+
+        # UTM sone 18S
+        target_sr = osr.SpatialReference()
+        target_sr.ImportFromEPSG(32718)
+
+        target_raster_path = os.path.join('.', 'target.tif')
+
+        pygeoprocessing.reproject_and_warp_raster(
+            base_raster_path, reference.pixel_size(30),
+            target_sr.ExportToWkt(), 'bilinear', target_raster_path)
+
+        target_info = pygeoprocessing.get_raster_info(target_raster_path)
+        output_sr = osr.SpatialReference()
+        output_sr.ImportFromWkt(target_info['projection'])
+        self.assertTrue(target_sr.IsSame(output_sr))
+
+    def test_copy_vector(self):
+        """PGP.geoprocessing: test copy_vector."""
+        reference = sampledata.SRS_COLOMBIA
+
+        polygons = [
+            Polygon([
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 2,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 2,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                ]),
+            Polygon([
+                (reference.origin[0] + reference.pixel_size(30)[0] * 3,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 3,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 3,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                ]),
+            Polygon([
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
+                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
+                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
+                ]),
+        ]
+
+        vector_path = os.path.join(self.workspace_dir, 'vector.shp')
+        pygeoprocessing.testing.create_vector_on_disk(
+            polygons, reference.projection, vector_format="ESRI Shapefile",
+            filename=vector_path)
+
+        vector_copy_path = os.path.join(
+            self.workspace_dir, 'vector_copy.shp')
+        pygeoprocessing.copy_vector(vector_path, vector_copy_path)
+        pygeoprocessing.testing.assert_vectors_equal(
+            vector_path, vector_copy_path, 1e-6)
+
     def test_reproject_vector(self):
         """PGP: test reproject vector w/ a feature outside of reference."""
         reference = sampledata.SRS_COLOMBIA
@@ -134,11 +385,15 @@ class TestPyGeoprocessing(unittest.TestCase):
 
         raster_info = pygeoprocessing.get_raster_info(raster_filename)
 
+        # it's difficult to test equality of projection, so this is okay
+        self.assertTrue('projection' in raster_info)
+        del raster_info['projection']
+
         expected_results = {
             'pixel_size': (30.0, -30.0),
             'mean_pixel_size': 30.0,
             'raster_size': (10, 5),
-            'nodata': nodata,
+            'nodata': [nodata],
             'n_bands': 1,
             'bounding_box': [
                 reference.origin[0], reference.origin[1],
@@ -151,6 +406,7 @@ class TestPyGeoprocessing(unittest.TestCase):
         }
 
         self.assertEqual(expected_results, raster_info)
+
 
     def test_raster_info_nodata_undefied(self):
         """PGP.geoprocessing: covers info case when nodata is undefined."""
@@ -166,7 +422,7 @@ class TestPyGeoprocessing(unittest.TestCase):
             datatype=gdal.GDT_Byte)
 
         fetched_nodata_value = pygeoprocessing.get_raster_info(
-            raster_path)['nodata']
+            raster_path)['nodata'][0]
 
         self.assertEquals(fetched_nodata_value, nodata)
 
@@ -1085,156 +1341,6 @@ class TestPyGeoprocessing(unittest.TestCase):
             raster_b_filename, out_a_filename, rel_tol=1e-9)
         pygeoprocessing.testing.assert_rasters_equal(
             raster_b_filename, out_b_filename, rel_tol=1e-9)
-
-    def test_vect_datasets_bad_filelist(self):
-        """PGP.geoprocessing: vect..._datasets expected error for non-list."""
-        pixel_matrix = numpy.ones((5, 5), numpy.int16)
-        reference = sampledata.SRS_COLOMBIA
-        nodata = -1
-        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
-        pygeoprocessing.testing.create_raster_on_disk(
-            [pixel_matrix], reference.origin, reference.projection, nodata,
-            reference.pixel_size(30), filename=raster_filename)
-
-        out_filename = pygeoprocessing.temporary_filename()
-        with self.assertRaises(ValueError):
-            # intentionally passing a filename rather than a list of files
-            # to get an expected exception
-            pygeoprocessing.vectorize_datasets(
-                raster_filename, lambda x: x, out_filename,
-                gdal.GDT_Int32, nodata, 30, 'intersection')
-
-    def test_vect_datasets_output_alias(self):
-        """PGP.geoprocessing: vect..._datasets expected error for aliasing."""
-        pixel_matrix = numpy.ones((5, 5), numpy.int16)
-        reference = sampledata.SRS_COLOMBIA
-        nodata = -1
-        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
-        pygeoprocessing.testing.create_raster_on_disk(
-            [pixel_matrix], reference.origin, reference.projection, nodata,
-            reference.pixel_size(30), filename=raster_filename)
-
-        with self.assertRaises(ValueError):
-            # intentionally passing a filename rather than a list of files
-            # to get an expected exception
-            pygeoprocessing.vectorize_datasets(
-                [raster_filename], lambda x: x, raster_filename,
-                gdal.GDT_Int32, nodata, 30, 'intersection')
-
-    def test_vec_datasets_oserror(self):
-        """PGP.geoprocessing: vec_datasets os.remove OSError handling."""
-        pixel_matrix = numpy.ones((5, 5), numpy.int16)
-        reference = sampledata.SRS_COLOMBIA
-        nodata = -1
-        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
-        pygeoprocessing.testing.create_raster_on_disk(
-            [pixel_matrix], reference.origin, reference.projection, nodata,
-            reference.pixel_size(30), filename=raster_filename)
-
-        polygons = [
-            Polygon([
-                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
-                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
-                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
-                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
-                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
-                ]),
-        ]
-        aoi_filename = os.path.join(self.workspace_dir, 'aoi')
-        pygeoprocessing.testing.create_vector_on_disk(
-            polygons, reference.projection, filename=aoi_filename)
-
-        out_filename = os.path.join(self.workspace_dir, 'out.tif')
-        with mock.patch.object(
-                os, 'remove', return_value=None) as os_remove_mock:
-            try:
-                os_remove_mock.side_effect = OSError('Mock OSError')
-                pygeoprocessing.vectorize_datasets(
-                    [raster_filename], lambda x: x, out_filename,
-                    gdal.GDT_Int32, nodata, 30, 'intersection',
-                    aoi_uri=aoi_filename)
-            except OSError as error:
-                self.fail("Unexpected OSError was raised %s" % error)
-
-        pygeoprocessing.testing.assert_rasters_equal(
-            raster_filename, out_filename, rel_tol=1e-9)
-
-    def test_vect_datasets_bad_bbs(self):
-        """PGP.geoprocessing: vect..._datasets expected error on bad BBox."""
-        pixel_matrix = numpy.ones((5, 5), numpy.int16)
-        reference = sampledata.SRS_COLOMBIA
-        nodata = -1
-        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
-        pygeoprocessing.testing.create_raster_on_disk(
-            [pixel_matrix], reference.origin, reference.projection, nodata,
-            reference.pixel_size(30), filename=raster_filename)
-
-        out_filename = pygeoprocessing.temporary_filename()
-        with self.assertRaises(ValueError):
-            # intentionally passing a filename rather than a list of files
-            # to get an expected exception
-            pygeoprocessing.vectorize_datasets(
-                [raster_filename], lambda x: x, out_filename,
-                gdal.GDT_Int32, nodata, 30, 'bad_mode')
-
-    def test_vect_datasets_identity(self):
-        """PGP.geoprocessing: vectorize_datasets f(x)=x."""
-        pixel_matrix = numpy.ones((5, 5), numpy.int16)
-        reference = sampledata.SRS_COLOMBIA
-        nodata = -1
-        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
-        pygeoprocessing.testing.create_raster_on_disk(
-            [pixel_matrix], reference.origin, reference.projection, nodata,
-            reference.pixel_size(30), filename=raster_filename)
-
-        out_filename = os.path.join(self.workspace_dir, 'out.tif')
-        pygeoprocessing.vectorize_datasets(
-            [raster_filename], lambda x: x, out_filename, gdal.GDT_Int32,
-            nodata, 30, 'intersection')
-
-        pygeoprocessing.testing.assert_rasters_equal(
-            raster_filename, out_filename, rel_tol=1e-9)
-
-    def test_vect_datasets_identity_aoi(self):
-        """PGP.geoprocessing: vectorize_datasets f(x)=x with AOI."""
-        pixel_matrix = numpy.ones((5, 5), numpy.int16)
-        reference = sampledata.SRS_COLOMBIA
-        nodata = -1
-        raster_filename = os.path.join(self.workspace_dir, 'raster.tif')
-        pygeoprocessing.testing.create_raster_on_disk(
-            [pixel_matrix], reference.origin, reference.projection, nodata,
-            reference.pixel_size(30), filename=raster_filename)
-
-        polygons = [
-            Polygon([
-                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
-                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
-                (reference.origin[0] + reference.pixel_size(30)[0] * 5,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
-                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 5),
-                (reference.origin[0] + reference.pixel_size(30)[0] * 0,
-                 reference.origin[1] + reference.pixel_size(30)[1] * 0),
-                ]),
-        ]
-        aoi_filename = os.path.join(self.workspace_dir, 'aoi')
-        pygeoprocessing.testing.create_vector_on_disk(
-            polygons, reference.projection, filename=aoi_filename)
-
-        out_filename = os.path.join(self.workspace_dir, 'out.tif')
-        pygeoprocessing.vectorize_datasets(
-            [raster_filename], lambda x: x, out_filename, gdal.GDT_Int32,
-            nodata, 30, 'intersection', aoi_uri=aoi_filename)
-
-        pygeoprocessing.testing.assert_rasters_equal(
-            raster_filename, out_filename, rel_tol=1e-9)
 
     def test_iterblocks(self):
         """PGP.geoprocessing: Sum a 1000**2 raster using iterblocks."""
