@@ -1,4 +1,5 @@
 """A collection of GDAL dataset and raster utilities."""
+import types
 import logging
 import os
 import shutil
@@ -35,6 +36,7 @@ _LARGEST_ITERBLOCK = 2**20  # largest block for iterblocks to read in cells
 
 # map gdal types to numpy equivalent
 _GDAL_TYPE_TO_NUMPY_LOOKUP = {
+    gdal.GDT_Byte: numpy.int8,
     gdal.GDT_Int16: numpy.int16,
     gdal.GDT_Int32: numpy.int32,
     gdal.GDT_UInt16: numpy.uint16,
@@ -94,6 +96,29 @@ def raster_calculator(
     Raises:
         ValueError: invalid input provided
     """
+    # It's a common error to not pass in path/band tuples, so check for that
+    # and report error if so
+    bad_raster_path_list = False
+    if not isinstance(base_raster_path_band_list, (list, tuple)):
+        bad_raster_path_list = True
+    else:
+        for value in base_raster_path_band_list:
+            if not isinstance(value, (list, tuple)):
+                bad_raster_path_list = True
+            elif len(value) != 2:
+                bad_raster_path_list = True
+            elif not isinstance(value[0], types.StringTypes):
+                bad_raster_path_list = True
+            elif not isinstance(value[1], int):
+                bad_raster_path_list = True
+            if bad_raster_path_list:
+                break
+    if bad_raster_path_list:
+        raise ValueError(
+            "Expected a list of path / integer band tuples for "
+            "`base_raster_path_band_list`, instead got: %s" %
+            base_raster_path_band_list)
+
     not_found_paths = []
     for path, _ in base_raster_path_band_list:
         if not os.path.exists(path):
@@ -290,7 +315,8 @@ def align_and_resize_raster_stack(
     float_re = r'[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?'
     # regular expression to match a float
     if bounding_box_mode not in ["union", "intersection"] and not re.match(
-            r'bb=\[%s,%s,%s,%s\]' % ((float_re,)*4), bounding_box_mode):
+            r'bb=\[[ ]*%s,[ ]*%s,[ ]*%s,[ ]*%s[ ]*\]' % (
+                (float_re,)*4), bounding_box_mode):
         raise ValueError("Unknown bounding_box_mode %s" % (
             str(bounding_box_mode)))
 
@@ -312,7 +338,8 @@ def align_and_resize_raster_stack(
 
     # get the literal or intersecting/unioned bounding box
     bb_match = re.match(
-        r'bb=\[(%s),(%s),(%s),(%s)\]' % ((float_re,)*4), bounding_box_mode)
+        r'bb=\[[ ]*(%s),[ ]*(%s),[ ]*(%s),[ ]*(%s)\]' % (
+            (float_re,)*4), bounding_box_mode)
     if bb_match:
         target_bounding_box = [float(x) for x in bb_match.groups()]
     else:
