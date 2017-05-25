@@ -1227,6 +1227,40 @@ class PyGeoprocessing10(unittest.TestCase):
         expected_result = test_value * (n_pixels ** 4)
         self.assertEqual(numpy.sum(target_array), expected_result)
 
+    def test_convolve_2d_large(self):
+        """PGP.geoprocessing: test convolve 2d with large kernel & signal."""
+        reference = sampledata.SRS_COLOMBIA
+        n_pixels = 100
+        n_kernel_pixels = 1750
+        signal_array = numpy.ones((n_pixels, n_pixels), numpy.float32)
+        test_value = 0.5
+        signal_array[:] = test_value
+        nodata_target = -1
+        signal_path = os.path.join(self.workspace_dir, 'signal.tif')
+        pygeoprocessing.testing.create_raster_on_disk(
+            [signal_array], reference.origin, reference.projection,
+            nodata_target, reference.pixel_size(30), filename=signal_path)
+        kernel_path = os.path.join(self.workspace_dir, 'kernel.tif')
+        kernel_array = numpy.zeros(
+            (n_kernel_pixels, n_kernel_pixels), numpy.float32)
+        kernel_array[n_kernel_pixels/2,n_kernel_pixels/2] = 1
+        pygeoprocessing.testing.create_raster_on_disk(
+            [kernel_array], reference.origin, reference.projection,
+            nodata_target, reference.pixel_size(30), filename=kernel_path)
+        target_path = os.path.join(self.workspace_dir, 'target.tif')
+        pygeoprocessing.convolve_2d(
+            (signal_path, 1), (kernel_path, 1), target_path)
+        target_raster = gdal.Open(target_path)
+        target_band = target_raster.GetRasterBand(1)
+        target_array = target_band.ReadAsArray()
+        target_band = None
+        target_raster = None
+
+        # calculate expected result by adding up all squares, subtracting off
+        # the sides and realizing diagonals got subtracted twice
+        expected_result = test_value * (n_pixels ** 2)
+        self.assertEqual(numpy.sum(target_array), expected_result)
+
     def test_calculate_slope(self):
         """PGP.geoprocessing: test calculate slope."""
         reference = sampledata.SRS_COLOMBIA
@@ -1346,12 +1380,25 @@ class PyGeoprocessing10(unittest.TestCase):
         """PGP.geoprocessing: test distance transform EDT."""
         reference = sampledata.SRS_COLOMBIA
         n_pixels = 1000
-        base_raster_array = numpy.zeros((n_pixels, n_pixels), numpy.float32)
+        base_raster_array = numpy.zeros(
+            (n_pixels, n_pixels), dtype=numpy.int8)
         base_raster_array[n_pixels/2, n_pixels/2] = 1
         base_raster_array[0, 0] = 1
         base_raster_array[0, n_pixels-1] = 1
+        base_raster_array[3, 4] = 1
+        base_raster_array[3, 5] = 1
+        base_raster_array[3, 6] = 1
+        base_raster_array[4, 4] = 1
+        base_raster_array[4, 5] = 1
+        base_raster_array[4, 6] = 1
+        base_raster_array[5, 4] = 1
+        base_raster_array[5, 5] = 1
+        base_raster_array[5, 6] = 1
         base_raster_array[n_pixels-1, 0] = 1
         base_raster_array[n_pixels-1, n_pixels-1] = 1
+        base_raster_array[n_pixels/2, n_pixels/2] = 1
+        base_raster_array[n_pixels/2, n_pixels/4] = 1
+        base_raster_array[n_pixels/2, (3*n_pixels)/4] = 1
         nodata_target = -1
         base_raster_path = os.path.join(
             self.workspace_dir, 'base_raster.tif')
@@ -1381,7 +1428,7 @@ class PyGeoprocessing10(unittest.TestCase):
         import pygeoprocessing.geoprocessing
         # just test the first few numbers in the A051037 series
         regular_ints = [
-            1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 16, 18, 20, 24,  25, 27, 30,
+            1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 16, 18, 20, 24, 25, 27, 30,
             32, 36, 40, 45, 48, 50, 54, 60, 64, 72, 75, 80, 81, 90, 96, 100,
             108, 120, 125, 128, 135, 144, 150, 160, 162, 180, 192, 200, 216,
             225, 240, 243, 250, 256, 270, 288, 300, 320, 324, 360, 375, 384,

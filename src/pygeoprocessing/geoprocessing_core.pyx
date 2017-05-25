@@ -21,10 +21,8 @@ _DEFAULT_GTIFF_CREATION_OPTIONS = ('TILED=YES', 'BIGTIFF=IF_SAFER')
 
 LOGGER = logging.getLogger('geoprocessing_core')
 
-
 cdef long long _f(long long x, long long i, long long gi):
     return (x-i)*(x-i) + gi*gi
-
 
 @cython.cdivision(True)
 cdef long long _sep(long long i, long long u, long long gu, long long gi):
@@ -48,12 +46,13 @@ def distance_transform_edt(base_mask_raster_path_band, target_distance_path):
         None."""
     cdef int yoff, row_index, block_ysize, win_ysize, n_rows
     cdef int xoff, col_index, block_xsize, win_xsize, n_cols
-    cdef int q_index, local_x_index, local_y_index
+    cdef int q_index, local_x_index, local_y_index, u_index
+    cdef int gu, gsq, tq, sq
     cdef numpy.ndarray[numpy.int32_t, ndim=2] g_block
     cdef numpy.ndarray[numpy.int32_t, ndim=1] s_array
     cdef numpy.ndarray[numpy.int32_t, ndim=1] t_array
     cdef numpy.ndarray[numpy.float32_t, ndim=2] dt
-    cdef numpy.ndarray[numpy.int16_t, ndim=2] mask_block
+    cdef numpy.ndarray[numpy.int8_t, ndim=2] mask_block
 
     file_handle, base_mask_path = tempfile.mkstemp()
     os.close(file_handle)
@@ -73,7 +72,7 @@ def distance_transform_edt(base_mask_raster_path_band, target_distance_path):
 
     pygeoprocessing.raster_calculator(
         [base_mask_raster_path_band], _mask_op, base_mask_path,
-        gdal.GDT_Int16, g_nodata, calc_raster_stats=False)
+        gdal.GDT_Byte, g_nodata, calc_raster_stats=False)
 
     base_mask_raster = gdal.Open(base_mask_path)
     base_mask_band = base_mask_raster.GetRasterBand(1)
@@ -99,24 +98,29 @@ def distance_transform_edt(base_mask_raster_path_band, target_distance_path):
     # scan 1
     done = False
     block_xsize = raster_info['block_size'][0]
+    mask_block = numpy.empty((n_rows, block_xsize), dtype=numpy.int8)
+    g_block = numpy.empty((n_rows, block_xsize), dtype=numpy.int32)
     for xoff in numpy.arange(0, n_cols, block_xsize):
         win_xsize = block_xsize
         if xoff + win_xsize > n_cols:
             win_xsize = n_cols - xoff
+            mask_block = numpy.empty((n_rows, win_xsize), dtype=numpy.int8)
+            g_block = numpy.empty((n_rows, win_xsize), dtype=numpy.int32)
             done = True
-        mask_block = base_mask_band.ReadAsArray(
-            xoff=xoff, yoff=0, win_xsize=win_xsize, win_ysize=n_rows)
-        g_block = numpy.empty((n_rows, win_xsize), dtype=numpy.int32)
+        base_mask_band.ReadAsArray(
+            xoff=xoff, yoff=0, win_xsize=win_xsize, win_ysize=n_rows,
+            buf_obj=mask_block)
         # base case
         g_block[0, :] = (mask_block[0, :] == 0) * numerical_inf
-        for local_x_index in xrange(win_xsize):
-            for row_index in xrange(1, n_rows):
+        for row_index in xrange(1, n_rows):
+            for local_x_index in xrange(win_xsize):
                 if mask_block[row_index, local_x_index] == 1:
                     g_block[row_index, local_x_index] = 0
                 else:
                     g_block[row_index, local_x_index] = (
                         g_block[row_index-1, local_x_index] + 1)
-            for row_index in xrange(n_rows-2, -1, -1):
+        for row_index in xrange(n_rows-2, -1, -1):
+            for local_x_index in xrange(win_xsize):
                 if (g_block[row_index+1, local_x_index] <
                         g_block[row_index, local_x_index]):
                     g_block[row_index, local_x_index] = (
@@ -140,44 +144,55 @@ def distance_transform_edt(base_mask_raster_path_band, target_distance_path):
 
     done = False
     block_ysize = g_band_blocksize[1]
+    g_block = numpy.empty((block_ysize, n_cols), dtype=numpy.int32)
+    dt = numpy.empty((block_ysize, n_cols), dtype=numpy.float32)
     for yoff in numpy.arange(0, n_rows, block_ysize):
         win_ysize = block_ysize
         if yoff + win_ysize >= n_rows:
             win_ysize = n_rows - yoff
+            g_block = numpy.empty((win_ysize, n_cols), dtype=numpy.int32)
+            dt = numpy.empty((win_ysize, n_cols), dtype=numpy.float32)
             done = True
-        g_block = g_band.ReadAsArray(
-            xoff=0, yoff=yoff, win_xsize=n_cols, win_ysize=win_ysize)
-        dt = numpy.empty((win_ysize, n_cols), dtype=numpy.float32)
+        g_band.ReadAsArray(
+            xoff=0, yoff=yoff, win_xsize=n_cols, win_ysize=win_ysize,
+            buf_obj=g_block)
         for local_y_index in xrange(win_ysize):
             q_index = 0
             s_array[0] = 0
             t_array[0] = 0
             for u_index in xrange(1, n_cols):
-                while (q_index >= 0 and
-                       _f(t_array[q_index], s_array[q_index],
-                          g_block[local_y_index, s_array[q_index]]) >
-                       _f(t_array[q_index], u_index,
-                          g_block[local_y_index, u_index])):
+                gu = g_block[local_y_index, u_index]**2
+                while (q_index >= 0):
+                    tq = t_array[q_index]
+                    sq = s_array[q_index]
+                    gsq = g_block[local_y_index, sq]**2
+                    if ((tq-sq)**2 + gsq <= (tq-u_index)**2 + gu):
+                        break
                     q_index -= 1
                 if q_index < 0:
                     q_index = 0
                     s_array[0] = u_index
+                    sq = u_index
+                    gsq = g_block[local_y_index, sq]**2
                 else:
-                    w = 1 + _sep(
-                        s_array[q_index], u_index,
-                        g_block[local_y_index, u_index],
-                        g_block[local_y_index, s_array[q_index]])
+                    w = 1 + (
+                        u_index**2 - sq**2 + gu - gsq) / (2*(u_index-sq))
                     if w < n_cols:
                         q_index += 1
                         s_array[q_index] = u_index
                         t_array[q_index] = w
 
+            sq = s_array[q_index]
+            gsq = g_block[local_y_index, sq]**2
+            tq = t_array[q_index]
             for u_index in xrange(n_cols-1, -1, -1):
-                dt[local_y_index, u_index] = _f(
-                    u_index, s_array[q_index],
-                    g_block[local_y_index, s_array[q_index]])
-                if u_index == t_array[q_index]:
+                dt[local_y_index, u_index] = (u_index-sq)**2+gsq
+                if u_index == tq:
                     q_index -= 1
+                    if q_index >= 0:
+                        sq = s_array[q_index]
+                        gsq = g_block[local_y_index, sq]**2
+                        tq = t_array[q_index]
 
         valid_mask = g_block != g_nodata
         dt[valid_mask] = numpy.sqrt(dt[valid_mask])

@@ -28,10 +28,6 @@ import shapely.prepared
 
 import geoprocessing_core
 
-AggregatedValues = collections.namedtuple(
-    'AggregatedValues',
-    'total pixel_mean hectare_mean n_pixels pixel_min pixel_max')
-
 LOGGER = logging.getLogger('pygeoprocessing.geoprocessing')
 _LOGGING_PERIOD = 5.0  # min 5.0 seconds per update log message for the module
 _DEFAULT_GTIFF_CREATION_OPTIONS = ('TILED=YES', 'BIGTIFF=IF_SAFER')
@@ -119,7 +115,7 @@ def raster_calculator(
         for path_band in base_raster_path_band_list]
     geospatial_info_set = set()
     for raster_info in raster_info_list:
-        # Rouding geotransform to 3 places to determine equality between
+        # Rounding geotransform to 3 places to determine equality between
         # geotransforms.  Otherwise identical GTs can detect as different
         # depending on what the GT passed through on the way here.
         rounded_geotransform = tuple([
@@ -365,7 +361,7 @@ def align_and_resize_raster_stack(
 def calculate_raster_stats(raster_path):
     """Calculate and set min, max, stdev, and mean for all bands in raster.
 
-    Args:
+    Parameters:
         raster_path (string): a path to a GDAL raster raster that will be
             modified by having its band statistics set
 
@@ -444,9 +440,8 @@ def new_raster_from_base(
             passed to the gdal creation driver, overrides defaults
 
     Returns:
-        nothing
+        None
     """
-    # nodata might be a numpy type coming in, set it to native python type
     base_raster = gdal.Open(base_path)
     if n_rows is None:
         n_rows = base_raster.RasterYSize
@@ -916,7 +911,7 @@ def calculate_slope(
     Returns:
         None
     """
-    # call-through to cython implementation
+    # call-through to Cython implementation
     geoprocessing_core.calculate_slope(
         dem_raster_path_band, target_slope_path,
         gtiff_creation_options=gtiff_creation_options)
@@ -1183,16 +1178,6 @@ def reclassify_raster(
         target_raster_path, target_datatype, target_nodata)
 
 
-class DatasetUnprojected(Exception):
-    """An exception in case a dataset is unprojected"""
-    pass
-
-
-class DifferentProjections(Exception):
-    """An exception in case a set of datasets are not in the same projection"""
-    pass
-
-
 def warp_raster(
         base_raster_path, target_pixel_size, target_raster_path,
         resample_method, target_bb=None, target_sr_wkt=None,
@@ -1325,7 +1310,7 @@ def rasterize(
     Burn the layer at `layer_index` in `vector_path` to an existing
     raster at `target_raster_path_band`.
 
-    Args:
+    Parameters:
         vector_path (string): filepath to vector to rasterize.
         target_raster_path (string): path to an existing raster to burn vector
             into.  Can have multiple bands.
@@ -1387,40 +1372,45 @@ def rasterize(
     gdal.Dataset.__swig_destroy__(raster)
 
 
-def calculate_disjoint_polygon_set(shapefile_uri):
+def calculate_disjoint_polygon_set(vector_path, layer_index=0):
     """Create a list of sets of polygons that don't overlap.
 
     Determining the minimal number of those sets is an np-complete problem so
     this is an approximation that builds up sets of maximal subsets.
 
-    Args:
-        shapefile_uri (string): a uri to an OGR shapefile to process
+    Parameters:
+        vector_path (string): a path to an OGR vector.
+        layer_index (int): index of underlying layer in `vector_path` to
+            calculate disjoint set. Defaults to 0.
 
     Returns:
-        subset_list (list): list of sets of FIDs from shapefile_uri
+        subset_list (list): list of sets of FIDs from vector_path
     """
-    shapefile = ogr.Open(shapefile_uri)
-    shapefile_layer = shapefile.GetLayer()
+    vector = ogr.Open(vector_path)
+    vector_layer = vector.GetLayer()
 
     poly_intersect_lookup = {}
-    for poly_feat in shapefile_layer:
+    for poly_feat in vector_layer:
         poly_wkt = poly_feat.GetGeometryRef().ExportToWkt()
         shapely_polygon = shapely.wkt.loads(poly_wkt)
+        poly_wkt = None
         poly_fid = poly_feat.GetFID()
         poly_intersect_lookup[poly_fid] = {
             'poly': shapely_polygon,
-            'prepared': shapely.prepared.prep(shapely_polygon),
             'intersects': set(),
         }
-    shapefile_layer.ResetReading()
+    vector_layer = None
+    vector = None
 
     for poly_fid in poly_intersect_lookup:
+        polygon = shapely.prepared.prep(
+            poly_intersect_lookup[poly_fid]['poly'])
         for intersect_poly_fid in poly_intersect_lookup:
-            polygon = poly_intersect_lookup[poly_fid]['prepared']
-            if polygon.intersects(
+            if intersect_poly_fid == poly_fid or polygon.intersects(
                     poly_intersect_lookup[intersect_poly_fid]['poly']):
                 poly_intersect_lookup[poly_fid]['intersects'].add(
                     intersect_poly_fid)
+        polygon = None
 
     # Build maximal subsets
     subset_list = []
@@ -1440,7 +1430,7 @@ def calculate_disjoint_polygon_set(shapefile_uri):
                     # it intersects and can't be part of the maximal subset
                     break
             else:
-                # we made it through without an intersection, add poly_fid to
+                # made it through without an intersection, add poly_fid to
                 # the maximal set
                 maximal_set.add(poly_fid)
                 # remove that polygon and update the intersections
@@ -1781,8 +1771,8 @@ def iterblocks(
             result in blocksizes equal to the original size.
         astype (list of numpy types): If none, output blocks are in the native
             type of the raster bands.  Otherwise this parameter is a list
-            of len(band_index_list) length that contains the desired output types
-            that iterblock generates for each band.
+            of len(band_index_list) length that contains the desired output
+            types that iterblock generates for each band.
         offset_only (boolean): defaults to False, if True `iterblocks` only
             returns offset dictionary and doesn't read any binary data from
             the raster.  This can be useful when iterating over writing to
@@ -1809,7 +1799,8 @@ def iterblocks(
     if band_index_list is None:
         band_index_list = range(1, raster.RasterCount + 1)
 
-    band_index_list = [raster.GetRasterBand(index) for index in band_index_list]
+    band_index_list = [
+        raster.GetRasterBand(index) for index in band_index_list]
 
     block = band_index_list[0].GetBlockSize()
     cols_per_block = block[0]
@@ -1963,7 +1954,7 @@ def _invoke_timed_callback(
         callback_period (float): time in seconds to pass until
             `callback_lambda` is invoked.
 
-    Return:
+    Returns:
         `reference_time` if `callback_lambda` not invoked, otherwise the time
         when `callback_lambda` was invoked.
     """
@@ -1972,6 +1963,7 @@ def _invoke_timed_callback(
         callback_lambda()
         return current_time
     return reference_time
+
 
 def _gdal_to_numpy_type(band):
     """Calculate the equivalent numpy datatype from a GDAL raster band type.
