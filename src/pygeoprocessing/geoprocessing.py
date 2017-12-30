@@ -31,7 +31,8 @@ import geoprocessing_core
 LOGGER = logging.getLogger('pygeoprocessing.geoprocessing')
 LOGGER.addHandler(logging.NullHandler())  # silence logging by default
 _LOGGING_PERIOD = 5.0  # min 5.0 seconds per update log message for the module
-_DEFAULT_GTIFF_CREATION_OPTIONS = ('TILED=YES', 'BIGTIFF=YES')
+_DEFAULT_GTIFF_CREATION_OPTIONS = (
+    'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=LZW')
 _LARGEST_ITERBLOCK = 2**20  # largest block for iterblocks to read in cells
 
 # A dictionary to map the resampling method input string to the gdal type
@@ -42,6 +43,12 @@ _RESAMPLE_DICT = {
     "cubic_spline": gdal.GRA_CubicSpline,
     "lanczos": gdal.GRA_Lanczos,
     'mode': gdal.GRA_Mode,
+    "average": gdal.GRA_Average,
+    "max": gdal.GRA_Max,
+    "min": gdal.GRA_Min,
+    "med": gdal.GRA_Med,
+    "q1": gdal.GRA_Q1,
+    "q3": gdal.GRA_Q3,
     }
 
 
@@ -507,8 +514,13 @@ def new_raster_from_base(
             'BLOCKXSIZE=%d' % block_size[0],
             'BLOCKYSIZE=%d' % block_size[1]])
 
-    base_band = None
+    # make target directory if it doesn't exist
+    try:
+        os.makedirs(os.path.dirname(target_path))
+    except OSError:
+        pass
 
+    base_band = None
     n_bands = len(band_nodata_list)
     target_raster = driver.Create(
         target_path.encode('utf-8'), n_cols, n_rows, n_bands, datatype,
@@ -1208,7 +1220,8 @@ def warp_raster(
         target_raster_path (string): the location of the resized and
             resampled raster.
         resample_method (string): the resampling technique, one of
-            "nearest|bilinear|cubic|cubic_spline|lanczos|mode"
+            "nearest|bilinear|cubic|cubic_spline|lanczos|average|mode|max"
+            "min|med|q1|q3"
         target_bb (list): if None, target bounding box is the same as the
             source bounding box.  Otherwise it's a list of float describing
             target bounding box in target coordinate system as
@@ -1699,7 +1712,7 @@ def convolve_2d(
 
     for signal_data, signal_block in iterblocks(
             s_path_band[0], band_index_list=[s_path_band[1]],
-            astype=_gdal_type_to_numpy_lookup[target_datatype]):
+            astype=[_gdal_type_to_numpy_lookup[target_datatype]]):
         last_time = _invoke_timed_callback(
             last_time, lambda: LOGGER.info(
                 "convolution operating on signal pixel (%d, %d)",
@@ -1713,7 +1726,7 @@ def convolve_2d(
 
         for kernel_data, kernel_block in iterblocks(
                 k_path_band[0], band_index_list=[k_path_band[1]],
-                astype=_gdal_type_to_numpy_lookup[target_datatype]):
+                astype=[_gdal_type_to_numpy_lookup[target_datatype]]):
             left_index_raster = (
                 signal_data['xoff'] - n_cols_kernel / 2 + kernel_data['xoff'])
             right_index_raster = (
@@ -1842,7 +1855,7 @@ def convolve_2d(
         mask_raster.FlushCache()
         for target_data, target_block in iterblocks(
                 target_path, band_index_list=[1],
-                astype=_gdal_type_to_numpy_lookup[target_datatype]):
+                astype=[_gdal_type_to_numpy_lookup[target_datatype]]):
             mask_block = mask_band.ReadAsArray(**target_data)
             if base_signal_nodata is not None and mask_nodata:
                 valid_mask = target_block != target_nodata
@@ -1957,7 +1970,7 @@ def iterblocks(
     last_col_block_width = None
 
     if astype is not None:
-        block_type_list = [astype] * len(band_index_list)
+        block_type_list = astype
     else:
         block_type_list = [
             _gdal_to_numpy_type(ds_band) for ds_band in band_index_list]
