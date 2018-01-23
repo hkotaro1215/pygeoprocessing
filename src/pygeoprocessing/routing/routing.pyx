@@ -461,13 +461,13 @@ def fill_pits(
 
     # used to set flow directions
     flow_dir_managed_raster = ManagedRaster(
-        target_flow_direction_path, 2**9, 1)
+        target_flow_direction_path, 2**6, 1)
 
     # used to set and read flags
-    flag_managed_raster = ManagedRaster(flag_raster_path, 2**9, 1)
+    flag_managed_raster = ManagedRaster(flag_raster_path, 2**6, 1)
     # used to set filled DEM and read current DEM.
     dem_filled_managed_raster = ManagedRaster(
-        target_filled_dem_raster_path, 2**9, 1)
+        target_filled_dem_raster_path, 2**6, 1)
 
     dem_raster = gdal.Open(dem_raster_path_band[0])
     dem_band = dem_raster.GetRasterBand(dem_raster_path_band[1])
@@ -729,6 +729,8 @@ def flow_accmulation(
     cdef int xoff, yoff
     cdef int flow_direction_nodata, n_dir, flow_dir
     cdef int use_weights
+    cdef double weight_val
+    cdef double weight_nodata = 0  # fill in with something for compiler
     cdef double flow_accum
     cdef stack[FlowPixel] flow_stack
     cdef FlowPixel fp
@@ -799,16 +801,19 @@ def flow_accmulation(
     raster_x_size, raster_y_size = flow_direction_raster_info['raster_size']
     # used to set flow directions
     flow_dir_managed_raster = ManagedRaster(
-        flow_dir_raster_path_band[0], 2**9, 0)
+        flow_dir_raster_path_band[0], 2**6, 0)
 
     # the flow accumulation result
     flow_accumulation_managed_raster = ManagedRaster(
-        target_flow_accumulation_raster_path, 2**9, 1)
+        target_flow_accumulation_raster_path, 2**6, 1)
 
     use_weights = 0
     if weight_raster_path_band is not None:
         weight_raster_path_raster = ManagedRaster(
-            weight_raster_path_band[0], 2**9, 0)
+            weight_raster_path_band[0], 2**6, 0)
+        weight_nodata = pygeoprocessing.get_raster_info(
+            weight_raster_path_band[0])['nodata'][
+                weight_raster_path_band[1]-1]
         use_weights = 1
 
     flow_direction_raster = gdal.Open(flow_dir_raster_path_band[0])
@@ -906,9 +911,10 @@ def flow_accmulation(
                 if flow_accum == _NODATA:
                     flow_stack.push(FlowPixel(i, fp.xi, fp.yi, fp.flow_val))
                     if use_weights:
-                        flow_stack.push(FlowPixel(
-                            0, xi_n, yi_n, weight_raster_path_raster.get(
-                                xi_n, yi_n)))
+                        weight_val = weight_raster_path_raster.get(xi_n, yi_n)
+                        if isclose(weight_val, weight_nodata):
+                            weight_val = 0
+                        flow_stack.push(FlowPixel(0, xi_n, yi_n, weight_val))
                     else:
                         flow_stack.push(FlowPixel(0, xi_n, yi_n, 1))
                     all_checked = 0  # indicate failure
@@ -1295,19 +1301,19 @@ def downstream_flow_length(
     raster_x_size, raster_y_size = flow_direction_raster_info['raster_size']
     # used to set flow directions
     flow_dir_managed_raster = ManagedRaster(
-        flow_dir_raster_path_band[0], 2**9, 0)
+        flow_dir_raster_path_band[0], 2**6, 0)
 
     # the flow accumulation result
     flow_length_managed_raster = ManagedRaster(
-        target_flow_length_raster_path, 2**9, 1)
+        target_flow_length_raster_path, 2**6, 1)
 
     flow_accum_managed_raster = ManagedRaster(
-        flow_accum_raster_path_band[0], 2**9, 0)
+        flow_accum_raster_path_band[0], 2**6, 0)
 
     use_weights = 0
     if weight_raster_path_band is not None:
         weight_raster_path_raster = ManagedRaster(
-            weight_raster_path_band[0], 2**9, 0)
+            weight_raster_path_band[0], 2**6, 0)
         weight_nodata = pygeoprocessing.get_raster_info(
             weight_raster_path_band[0])['nodata'][
                 weight_raster_path_band[1]-1]
