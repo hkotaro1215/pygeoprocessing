@@ -1,5 +1,18 @@
 # distutils: language=c++
-"""Pitfilling module."""
+"""
+Provides PyGeprocessing Routing functionality.
+
+Unless otherwise specified, all internal computation of rasters are done in
+a float64 space. The only possible loss of precision could occur when an incoming DEM type is
+an int64 type and values in that dem exceed 2^52 but GDAL does not support
+int64 rasters so no precision loss is possible with a float64.
+
+D8 float direction conventions follow TauDEM where each flow direction
+is encoded as:
+    # 321
+    # 4 0
+    # 567
+"""
 import errno
 import os
 import logging
@@ -29,8 +42,10 @@ from libcpp.vector cimport vector
 
 # This module expects rasters with a memory xy block size of 2**BLOCK_BITS
 cdef int BLOCK_BITS = 8
+cdef int MANAGED_RASTER_N_BLOCKS = 2**6
 NODATA = -1
 cdef int _NODATA = NODATA
+GDAL_INTERNAL_RASTER_TYPE = gdal.GDT_Float64
 
 cdef bint isclose(double a, double b):
     return abs(a - b) <= (1e-5 + 1e-7 * abs(b))
@@ -89,15 +104,8 @@ cdef class ManagedRaster:
         self.raster_x_size, self.raster_y_size = raster_info['raster_size']
         self.block_xsize, self.block_ysize = raster_info['block_size']
         self.block_bits = BLOCK_BITS
-        self.block_xsize = 1<<self.block_bits
-        self.block_ysize = 1<<self.block_bits
-        """if (self.block_xsize != (1 << self.block_bits) or
-                self.block_ysize != (1 << self.block_bits)):
-            error_string = (
-                "Expected block size that was %d bits wide, got %s" % (
-                    self.block_bits, raster_info['block_size']))
-            raise ValueError(error_string)
-        """
+        self.block_xsize = 1 << self.block_bits
+        self.block_ysize = 1 << self.block_bits
         self.block_nx = (
             self.raster_x_size + (self.block_xsize) - 1) / self.block_xsize
         self.block_ny = (
@@ -417,9 +425,9 @@ def fill_pits(
     pygeoprocessing.new_raster_from_base(
         dem_raster_path_band[0], flag_raster_path, gdal.GDT_Byte,
         [None], fill_value_list=[0], gtiff_creation_options=(
-            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=LZW',
-            'BLOCKXSIZE=%d' % (1<<BLOCK_BITS),
-            'BLOCKYSIZE=%d' % (1<<BLOCK_BITS)))
+            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE',
+            'BLOCKXSIZE=%d' % (1 << BLOCK_BITS),
+            'BLOCKYSIZE=%d' % (1 << BLOCK_BITS)))
 
     logger.info('flag raster created at %s', flag_raster_path)
 
@@ -432,46 +440,40 @@ def fill_pits(
     dem_raster_info = pygeoprocessing.get_raster_info(dem_raster_path_band[0])
     base_nodata = dem_raster_info['nodata'][dem_raster_path_band[1]-1]
     if base_nodata is not None:
-        dem_nodata = numpy.float32(base_nodata)
+        # cast to a float64 since that's our operating array type
+        dem_nodata = numpy.float64(base_nodata)
     else:
         # pick some very improbable value since it's hard to deal with NaNs
         dem_nodata = -1.23789789e29
-    pygeoprocessing.new_raster_from_base(
-        dem_raster_path_band[0], target_filled_dem_raster_path,
-        gdal.GDT_Float32, [dem_nodata], fill_value_list=[dem_nodata],
-        gtiff_creation_options=(
-            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=LZW',
+    gtiff_driver = gdal.GetDriverByName('GTiff')
+    dem_raster = gdal.OpenEx(dem_raster_path_band[0], gdal.OF_RASTER)
+    gtiff_driver.CreateCopy(
+        target_filled_dem_raster_path, dem_raster,
+        options=(
+            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE',
             'BLOCKXSIZE=%d' % (1 << BLOCK_BITS),
             'BLOCKYSIZE=%d' % (1 << BLOCK_BITS)))
-    target_filled_dem_raster = gdal.Open(
-        target_filled_dem_raster_path, gdal.GA_Update)
-    target_filled_dem_band = target_filled_dem_raster.GetRasterBand(1)
-    for block_offset, block_data in pygeoprocessing.iterblocks(
-            dem_raster_path_band[0], astype=[numpy.float64]):
-        target_filled_dem_band.WriteArray(
-            block_data, xoff=block_offset['xoff'], yoff=block_offset['yoff'])
-    target_filled_dem_band = None
-    target_filled_dem_raster = None
 
     pygeoprocessing.new_raster_from_base(
         dem_raster_path_band[0], target_flow_direction_path, gdal.GDT_Byte,
         [255], fill_value_list=[255], gtiff_creation_options=(
-            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=LZW',
-            'BLOCKXSIZE=%d' % (1<<BLOCK_BITS),
-            'BLOCKYSIZE=%d' % (1<<BLOCK_BITS)))
+            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE',
+            'BLOCKXSIZE=%d' % (1 << BLOCK_BITS),
+            'BLOCKYSIZE=%d' % (1 << BLOCK_BITS)))
 
     # these are used to determine if a sample is within the raster
     raster_x_size, raster_y_size = dem_raster_info['raster_size']
 
     # used to set flow directions
     flow_dir_managed_raster = ManagedRaster(
-        target_flow_direction_path, 2**6, 1)
+        target_flow_direction_path, MANAGED_RASTER_N_BLOCKS, 1)
 
     # used to set and read flags
-    flag_managed_raster = ManagedRaster(flag_raster_path, 2**6, 1)
+    flag_managed_raster = ManagedRaster(
+        flag_raster_path, MANAGED_RASTER_N_BLOCKS, 1)
     # used to set filled DEM and read current DEM.
     dem_filled_managed_raster = ManagedRaster(
-        target_filled_dem_raster_path, 2**6, 1)
+        target_filled_dem_raster_path, MANAGED_RASTER_N_BLOCKS, 1)
 
     dem_raster = gdal.Open(dem_raster_path_band[0])
     dem_band = dem_raster.GetRasterBand(dem_raster_path_band[1])
@@ -546,8 +548,7 @@ def fill_pits(
                         flag_managed_raster.set(xi-1+xoff, yi-1+yoff, 1)
                         # set it to flow off the edge, this might get changed
                         # later if it's caught in a flow
-                        flow_dir_managed_raster.set(
-                            xi-1+xoff, yi-1+yoff, i)
+                        flow_dir_managed_raster.set(xi-1+xoff, yi-1+yoff, i)
                         break
     logger.info("edges detected in %fs", time.time()-start_edge_time)
     start_pit_time = time.time()
@@ -557,7 +558,7 @@ def fill_pits(
         xi = p.xi
         yi = p.yi
         center_value = p.value
-        # loop invariant, center_value != nodata because it wouldn't have been pushed
+        # loop invariant, center_value != nodata
         p_queue.pop()
 
         if (xi == 0 or xi == (raster_x_size-1) or
@@ -618,7 +619,8 @@ def fill_pits(
 
                         # check for <= center value
                         if n_value <= center_value:
-                            flag_managed_raster.set(xi_n, yi_n, 1) # filled as neighbor
+                            # filled as neighbor
+                            flag_managed_raster.set(xi_n, yi_n, 1)
                             q.push(CoordinatePair(xi_n, yi_n))
                             # raise neighbor dem to center value
                             if n_value < center_value:
@@ -627,7 +629,8 @@ def fill_pits(
                         else:
                             # not flat so must be a slope pixel,
                             # push to slope queue
-                            flag_managed_raster.set(xi_n, yi_n, 1) # filled as upslope
+                            # filled as upslope
+                            flag_managed_raster.set(xi_n, yi_n, 1)
                             sq.push(CoordinatePair(xi_n, yi_n))
             else:
                 # otherwise it's a slope pixel, push to slope queue
@@ -665,7 +668,7 @@ def fill_pits(
                         flag_managed_raster.set(xi_n, yi_n, 1)
                     elif not isProcessed:
                         isProcessed = 1
-                        # nonRegionCell call
+                        # nonRegionCell call from pseudocode
                         isBoundary = 1
                         for j in xrange(8):
                             # check neighbors of neighbor
@@ -712,6 +715,8 @@ def flow_accmulation(
             # 321
             # 4 0
             # 567
+
+            where the value in each cell is is encoded as 1 << n, n in [0, 7]
 
         target_flow_accmulation_raster_path (string): path to single band
             raster to be created. Each pixel value will indicate the number
@@ -786,12 +791,12 @@ def flow_accmulation(
 
     pygeoprocessing.new_raster_from_base(
         flow_dir_raster_path_band[0],
-        target_flow_accumulation_raster_path, gdal.GDT_Float32,
+        target_flow_accumulation_raster_path, GDAL_INTERNAL_RASTER_TYPE,
         [_NODATA], fill_value_list=[_NODATA],
         gtiff_creation_options=(
-            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=LZW',
-            'BLOCKXSIZE=%d' % (1<<BLOCK_BITS),
-            'BLOCKYSIZE=%d' % (1<<BLOCK_BITS)))
+            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE',
+            'BLOCKXSIZE=%d' % (1 << BLOCK_BITS),
+            'BLOCKYSIZE=%d' % (1 << BLOCK_BITS)))
 
     logger.info(
         'flow accumulation raster created at %s',
@@ -800,21 +805,30 @@ def flow_accmulation(
     # these are used to determine if a sample is within the raster
     flow_direction_raster_info = pygeoprocessing.get_raster_info(
         flow_dir_raster_path_band[0])
-    flow_direction_nodata = flow_direction_raster_info['nodata'][
+
+    base_flow_direction_nodata = flow_direction_raster_info['nodata'][
         flow_dir_raster_path_band[1]-1]
+
+    if base_flow_direction_nodata is not None:
+        # cast to a float64 since that's our operating array type
+        flow_direction_nodata = base_flow_direction_nodata
+    else:
+        # pick some impossible value given our conventions
+        flow_direction_nodata = 99
+
     raster_x_size, raster_y_size = flow_direction_raster_info['raster_size']
     # used to set flow directions
     flow_dir_managed_raster = ManagedRaster(
-        flow_dir_raster_path_band[0], 2**6, 0)
+        flow_dir_raster_path_band[0], MANAGED_RASTER_N_BLOCKS, 0)
 
     # the flow accumulation result
     flow_accumulation_managed_raster = ManagedRaster(
-        target_flow_accumulation_raster_path, 2**6, 1)
+        target_flow_accumulation_raster_path, MANAGED_RASTER_N_BLOCKS, 1)
 
     use_weights = 0
     if weight_raster_path_band is not None:
         weight_raster_path_raster = ManagedRaster(
-            weight_raster_path_band[0], 2**6, 0)
+            weight_raster_path_band[0], MANAGED_RASTER_N_BLOCKS, 0)
         weight_nodata = pygeoprocessing.get_raster_info(
             weight_raster_path_band[0])['nodata'][
                 weight_raster_path_band[1]-1]
@@ -837,8 +851,7 @@ def flow_accmulation(
 
         # make a buffer big enough to capture block and boundaries around it
         buffer_array = numpy.empty(
-            (offset_dict['win_ysize']+2, offset_dict['win_xsize']+2),
-            dtype=numpy.uint8)
+            (win_ysize+2, win_xsize+2), dtype=numpy.uint8)
         buffer_array[:] = flow_direction_nodata
 
         # default numpy array boundaries
@@ -854,7 +867,7 @@ def flow_accmulation(
                 ('xa', 'xb', 'xoff', 'win_xsize', raster_x_size),
                 ('ya', 'yb', 'yoff', 'win_ysize', raster_y_size)]:
             if offset_dict[off_id] > 0:
-                # in thise case we have valid data to the left (or up)
+                # in this case we have valid data to the left (or up)
                 # grow the window and buffer slice in that direction
                 buffer_off[a_buffer_id] = None
                 offset_dict[off_id] -= 1
@@ -929,266 +942,6 @@ def flow_accmulation(
             flow_accumulation_managed_raster.set(fp.xi, fp.yi, fp.flow_val)
 
     shutil.rmtree(temp_dir_path)
-
-
-def calculate_slope(
-        base_elevation_raster_path_band, target_slope_path,
-        gtiff_creation_options=geoprocessing._DEFAULT_GTIFF_CREATION_OPTIONS):
-    """Create a percent slope raster from DEM raster.
-
-    Base algorithm is from Zevenbergen & Thorne "Quantitative Analysis of Land
-    Surface Topography" 1987 although it has been modified to include the
-    diagonal pixels by classic finite difference analysis.
-
-    For the following notation, we define each pixel's DEM value by a letter
-    with this spatial scheme:
-
-        abc
-        def
-        ghi
-
-    Then the slope at e is defined at ([dz/dx]^2 + [dz/dy]^2)^0.5
-
-    Where
-
-    [dz/dx] = ((c+2f+i)-(a+2d+g)/(8*x_cell_size)
-    [dz/dy] = ((g+2h+i)-(a+2b+c))/(8*y_cell_size)
-
-    In cases where a cell is nodata, we attempt to use the middle cell inline
-    with the direction of differentiation (either in x or y direction).  If
-    no inline pixel is defined, we use `e` and multiply the difference by
-    2^0.5 to account for the diagonal projection.
-
-    Parameters:
-        base_elevation_raster_path_band (string): a path/band tuple to a
-            raster of height values. (path_to_raster, band_index)
-        target_slope_path (string): path to target slope raster; will be a
-            32 bit float GeoTIFF of same size/projection as calculate slope
-            with units of slope rate (m/m) (not percent).
-        gtiff_creation_options (list or tuple): list of strings that will be
-            passed as GDAL "dataset" creation options to the GTIFF driver.
-
-    Returns:
-        None
-    """
-    cdef numpy.npy_float64 a, b, c, d, e, f, g, h, i, dem_nodata
-    cdef int a_valid, b_valid, c_valid, d_valid
-    cdef int f_valid, g_valid, h_valid, i_valid
-    cdef numpy.npy_float64 x_cell_size, y_cell_size,
-    cdef numpy.npy_float64 dzdx_accumulator, dzdy_accumulator
-    cdef int row_index, col_index, n_rows, n_cols,
-    cdef int x_denom_factor, y_denom_factor, win_xsize, win_ysize
-    cdef numpy.ndarray[numpy.npy_float64, ndim=2] dem_array
-    cdef numpy.ndarray[numpy.npy_float64, ndim=2] slope_array
-    cdef numpy.ndarray[numpy.npy_float64, ndim=2] dzdx_array
-    cdef numpy.ndarray[numpy.npy_float64, ndim=2] dzdy_array
-
-    dem_raster = gdal.Open(base_elevation_raster_path_band[0])
-    dem_band = dem_raster.GetRasterBand(base_elevation_raster_path_band[1])
-    dem_info = pygeoprocessing.get_raster_info(base_elevation_raster_path_band[0])
-    dem_nodata = dem_info['nodata'][0]
-    x_cell_size, y_cell_size = dem_info['pixel_size']
-    n_cols, n_rows = dem_info['raster_size']
-    pygeoprocessing.new_raster_from_base(
-        base_elevation_raster_path_band[0], target_slope_path,
-        gdal.GDT_Float32, [_NODATA],
-        fill_value_list=[float(_NODATA)],
-        gtiff_creation_options=gtiff_creation_options)
-    target_slope_raster = gdal.Open(target_slope_path, gdal.GA_Update)
-    target_slope_band = target_slope_raster.GetRasterBand(1)
-
-    for block_offset in pygeoprocessing.iterblocks(
-            base_elevation_raster_path_band[0], offset_only=True):
-        block_offset_copy = block_offset.copy()
-        # try to expand the block around the edges if it fits
-        x_start = 1
-        win_xsize = block_offset['win_xsize']
-        x_end = win_xsize+1
-        y_start = 1
-        win_ysize = block_offset['win_ysize']
-        y_end = win_ysize+1
-
-        if block_offset['xoff'] > 0:
-            block_offset_copy['xoff'] -= 1
-            block_offset_copy['win_xsize'] += 1
-            x_start -= 1
-        if block_offset['xoff']+win_xsize < n_cols:
-            block_offset_copy['win_xsize'] += 1
-            x_end += 1
-        if block_offset['yoff'] > 0:
-            block_offset_copy['yoff'] -= 1
-            block_offset_copy['win_ysize'] += 1
-            y_start -= 1
-        if block_offset['yoff']+win_ysize < n_rows:
-            block_offset_copy['win_ysize'] += 1
-            y_end += 1
-
-        dem_array = numpy.empty(
-            (win_ysize+2, win_xsize+2),
-            dtype=numpy.float64)
-        dem_array[:] = dem_nodata
-        slope_array = numpy.empty(
-            (win_ysize, win_xsize),
-            dtype=numpy.float64)
-        dzdx_array = numpy.empty(
-            (win_ysize, win_xsize),
-            dtype=numpy.float64)
-        dzdy_array = numpy.empty(
-            (win_ysize, win_xsize),
-            dtype=numpy.float64)
-
-        dem_band.ReadAsArray(
-            buf_obj=dem_array[y_start:y_end, x_start:x_end],
-            **block_offset_copy)
-
-        for row_index in xrange(1, win_ysize+1):
-            for col_index in xrange(1, win_xsize+1):
-                # Notation of the cell below comes from the algorithm
-                # description, cells are arraged as follows:
-                # abc
-                # def
-                # ghi
-                e = dem_array[row_index, col_index]
-                if isclose(e, dem_nodata):
-                    # we use dzdx as a guard below, no need to set dzdy
-                    dzdx_array[row_index-1, col_index-1] = _NODATA
-                    continue
-                dzdx_accumulator = 0.0
-                dzdy_accumulator = 0.0
-                x_denom_factor = 0
-                y_denom_factor = 0
-                a = dem_array[row_index-1, col_index-1]
-                b = dem_array[row_index-1, col_index]
-                c = dem_array[row_index-1, col_index+1]
-                d = dem_array[row_index, col_index-1]
-                f = dem_array[row_index, col_index+1]
-                g = dem_array[row_index+1, col_index-1]
-                h = dem_array[row_index+1, col_index]
-                i = dem_array[row_index+1, col_index+1]
-                a_valid = not isclose(a, dem_nodata)
-                b_valid = not isclose(b, dem_nodata)
-                c_valid = not isclose(c, dem_nodata)
-                d_valid = not isclose(d, dem_nodata)
-                f_valid = not isclose(f, dem_nodata)
-                g_valid = not isclose(g, dem_nodata)
-                h_valid = not isclose(h, dem_nodata)
-                i_valid = not isclose(i, dem_nodata)
-
-
-                # a - c direction
-                if a_valid and c_valid:
-                    dzdx_accumulator += a - c
-                    x_denom_factor += 2
-                elif a_valid and b_valid:
-                    dzdx_accumulator += a - b
-                    x_denom_factor += 1
-                elif b_valid and c_valid:
-                    dzdx_accumulator += b - c
-                    x_denom_factor += 1
-                elif a_valid:
-                    dzdx_accumulator += (a - e) * 1.4142135
-                    x_denom_factor += 1
-                elif c_valid:
-                    dzdx_accumulator += (e - c) * 1.4142135
-                    x_denom_factor += 1
-
-                # d - f direction
-                if d_valid and f_valid:
-                    dzdx_accumulator += 2 * (d - f)
-                    x_denom_factor += 4
-                elif d_valid:
-                    dzdx_accumulator += 2 * (d - e)
-                    x_denom_factor += 2
-                elif f_valid:
-                    dzdx_accumulator += 2 * (e - f)
-                    x_denom_factor += 2
-
-                # g - i direction
-                if g_valid and i_valid:
-                    dzdx_accumulator += g - i
-                    x_denom_factor += 2
-                elif g_valid and h_valid:
-                    dzdx_accumulator += g - h
-                    x_denom_factor += 1
-                elif h_valid and i_valid:
-                    dzdx_accumulator += h - i
-                    x_denom_factor += 1
-                elif g_valid:
-                    dzdx_accumulator += (g - e) * 1.4142135
-                    x_denom_factor += 1
-                elif i_valid:
-                    dzdx_accumulator += (e - i) * 1.4142135
-                    x_denom_factor += 1
-
-                # a - g direction
-                if a_valid and g_valid:
-                    dzdy_accumulator += a - g
-                    y_denom_factor += 2
-                elif a_valid and d_valid:
-                    dzdy_accumulator += a - d
-                    y_denom_factor += 1
-                elif d_valid and g_valid:
-                    dzdy_accumulator += d - g
-                    y_denom_factor += 1
-                elif a_valid:
-                    dzdy_accumulator += (a - e) * 1.4142135
-                    y_denom_factor += 1
-                elif g_valid:
-                    dzdy_accumulator += (e - g) * 1.4142135
-                    y_denom_factor += 1
-
-                # b - h direction
-                if b_valid and h_valid:
-                    dzdy_accumulator += 2 * (b - h)
-                    y_denom_factor += 4
-                elif b_valid:
-                    dzdy_accumulator += 2 * (b - e)
-                    y_denom_factor += 2
-                elif h_valid:
-                    dzdy_accumulator += 2 * (e - h)
-                    y_denom_factor += 2
-
-                # c - i direction
-                if c_valid and i_valid:
-                    dzdy_accumulator += c - i
-                    y_denom_factor += 2
-                elif c_valid and f_valid:
-                    dzdy_accumulator += c - f
-                    y_denom_factor += 1
-                elif f_valid and i_valid:
-                    dzdy_accumulator += f - i
-                    y_denom_factor += 1
-                elif c_valid:
-                    dzdy_accumulator += (c - e) * 1.4142135
-                    y_denom_factor += 1
-                elif i_valid:
-                    dzdy_accumulator += (e - i) * 1.4142135
-                    y_denom_factor += 1
-
-                if x_denom_factor != 0:
-                    dzdx_array[row_index-1, col_index-1] = (
-                        dzdx_accumulator / (x_denom_factor * x_cell_size))
-                else:
-                    dzdx_array[row_index-1, col_index-1] = 0.0
-                if y_denom_factor != 0:
-                    dzdy_array[row_index-1, col_index-1] = (
-                        dzdy_accumulator / (y_denom_factor * y_cell_size))
-                else:
-                    dzdy_array[row_index-1, col_index-1] = 0.0
-        valid_mask = dzdx_array != _NODATA
-        slope_array[:] = _NODATA
-        slope_array[valid_mask] = numpy.sqrt(
-            dzdx_array[valid_mask]**2 + dzdy_array[valid_mask]**2)
-        target_slope_band.WriteArray(
-            slope_array, xoff=block_offset['xoff'],
-            yoff=block_offset['yoff'])
-
-    dem_band = None
-    target_slope_band = None
-    gdal.Dataset.__swig_destroy__(dem_raster)
-    gdal.Dataset.__swig_destroy__(target_slope_raster)
-    dem_raster = None
-    target_slope_raster = None
 
 
 def downstream_flow_length(
@@ -1289,9 +1042,9 @@ def downstream_flow_length(
         target_flow_length_raster_path, gdal.GDT_Float32,
         [_NODATA], fill_value_list=[_NODATA],
         gtiff_creation_options=(
-            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=LZW',
-            'BLOCKXSIZE=%d' % (1<<BLOCK_BITS),
-            'BLOCKYSIZE=%d' % (1<<BLOCK_BITS)))
+            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE',
+            'BLOCKXSIZE=%d' % (1 << BLOCK_BITS),
+            'BLOCKYSIZE=%d' % (1 << BLOCK_BITS)))
 
     logger.info(
         'flow accumulation raster created at %s',
@@ -1305,19 +1058,19 @@ def downstream_flow_length(
     raster_x_size, raster_y_size = flow_direction_raster_info['raster_size']
     # used to set flow directions
     flow_dir_managed_raster = ManagedRaster(
-        flow_dir_raster_path_band[0], 2**6, 0)
+        flow_dir_raster_path_band[0], MANAGED_RASTER_N_BLOCKS, 0)
 
     # the flow accumulation result
     flow_length_managed_raster = ManagedRaster(
-        target_flow_length_raster_path, 2**6, 1)
+        target_flow_length_raster_path, MANAGED_RASTER_N_BLOCKS, 1)
 
     flow_accum_managed_raster = ManagedRaster(
-        flow_accum_raster_path_band[0], 2**6, 0)
+        flow_accum_raster_path_band[0], MANAGED_RASTER_N_BLOCKS, 0)
 
     use_weights = 0
     if weight_raster_path_band is not None:
         weight_raster_path_raster = ManagedRaster(
-            weight_raster_path_band[0], 2**6, 0)
+            weight_raster_path_band[0], MANAGED_RASTER_N_BLOCKS, 0)
         weight_nodata = pygeoprocessing.get_raster_info(
             weight_raster_path_band[0])['nodata'][
                 weight_raster_path_band[1]-1]
